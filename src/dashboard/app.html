@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity — omp-reflect</title>
+<style>
+:root {
+  color-scheme: dark light;
+  --page: oklch(0.16 0.02 307);
+  --surface: oklch(0.19 0.022 307);
+  --surface-2: oklch(0.235 0.026 307);
+  --border: oklch(1 0 0 / 9%);
+  --border-strong: oklch(1 0 0 / 13%);
+  --text: oklch(0.92 0.01 307);
+  --muted: oklch(0.71 0.016 307);
+  --dim: oklch(0.53 0.018 307);
+  --accent: oklch(0.72 0.19 340);
+  --heat-0: oklch(0.26 0.02 307);
+  --heat-1: oklch(0.42 0.1 340);
+  --heat-2: oklch(0.55 0.15 340);
+  --heat-3: oklch(0.68 0.19 340);
+  --heat-4: oklch(0.8 0.21 340);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --page: oklch(0.985 0.004 307);
+    --surface: oklch(1 0 0);
+    --surface-2: oklch(0.965 0.006 307);
+    --border: oklch(0 0 0 / 10%);
+    --border-strong: oklch(0 0 0 / 15%);
+    --text: oklch(0.26 0.03 307);
+    --muted: oklch(0.46 0.03 307);
+    --dim: oklch(0.58 0.025 307);
+    --heat-0: oklch(0.93 0.008 307);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 24px; background: var(--page); color: var(--text);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+main { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; }
+h1 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.panel h2 { margin: 0 0 2px; font-size: 14px; }
+.panel .sub { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+button {
+  font: inherit; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer;
+}
+button:hover { border-color: var(--border-strong); }
+button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+.seg { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 8px; padding: 2px; border: 0; margin: 0; }
+.seg button { border: 0; background: transparent; border-radius: 6px; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
+.card .label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+.card .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.card .sub { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* Heatmap */
+.hm-wrap { position: relative; }
+.hm-scroll { overflow-x: auto; padding-bottom: 4px; }
+.hm-months { display: grid; gap: 3px; margin-bottom: 6px; min-width: 560px; }
+.hm-months span { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.hm-body { display: flex; gap: 6px; min-width: 560px; }
+.hm-days { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; width: 28px; flex-shrink: 0; }
+.hm-days span { font-size: 10px; color: var(--muted); line-height: 12px; }
+.hm-grid { display: grid; grid-template-rows: repeat(7, 12px); grid-auto-flow: column; gap: 3px; flex: 1; min-width: 0; }
+.cell { width: 100%; min-width: 8px; height: 12px; border-radius: 2px; background: var(--heat-0);
+        outline: 1px solid color-mix(in oklab, var(--border) 70%, transparent); }
+.cell[data-pad="1"] { opacity: 0.28; background: transparent; outline-style: dashed; }
+.cell[data-level="1"] { background: var(--heat-1); }
+.cell[data-level="2"] { background: var(--heat-2); }
+.cell[data-level="3"] { background: var(--heat-3); }
+.cell[data-level="4"] { background: var(--heat-4); }
+.cell:focus-visible { outline: 2px solid var(--accent); }
+.hm-legend { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.hm-legend .cell { width: 12px; min-width: 12px; flex-shrink: 0; }
+.tooltip {
+  position: absolute; z-index: 30; transform: translate(-50%, -100%);
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 6px 10px; border-radius: 6px; background: var(--surface-2);
+  border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgb(0 0 0 / 28%);
+  pointer-events: none; white-space: nowrap; font-size: 11px;
+}
+.tooltip[data-below="true"] { transform: translate(-50%, 0); }
+.tooltip b { font-weight: 600; }
+.tooltip span { color: var(--muted); }
+/* Charts */
+.chart svg { width: 100%; height: 220px; display: block; }
+.chart .bar { fill: var(--heat-3); }
+.chart .bar:hover { fill: var(--heat-4); }
+.chart .area { fill: color-mix(in oklab, var(--accent) 25%, transparent); }
+.chart .line { stroke: var(--accent); stroke-width: 2; fill: none; }
+.chart text { fill: var(--muted); font-size: 10px; }
+.chart .grid-line { stroke: var(--border); stroke-width: 1; }
+/* Rankings */
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.rank { display: flex; flex-direction: column; gap: 12px; }
+.rank-row { display: flex; gap: 10px; align-items: flex-start; }
+.rank-n { width: 22px; height: 22px; flex-shrink: 0; border-radius: 999px; background: var(--surface-2);
+          color: var(--muted); font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.rank-body { flex: 1; min-width: 0; }
+.rank-title { font-weight: 600; overflow-wrap: anywhere; }
+.rank-bar { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin: 4px 0; }
+.rank-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--heat-2), var(--heat-4)); }
+.rank-sub { color: var(--muted); font-size: 12px; }
+/* Reflections */
+.refl { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 14px; margin-bottom: 12px; }
+.refl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.badge { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.pill { font-size: 10px; border: 1px solid var(--border-strong); color: var(--muted); border-radius: 999px; padding: 1px 8px; }
+.refl-obs { font-weight: 600; margin: 2px 0 8px; }
+.refl dt { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); display: inline; margin-right: 6px; }
+.refl dd { display: inline; margin: 0; color: var(--muted); }
+.refl .kv { margin: 2px 0; }
+.refl-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 11px; margin-top: 8px;
+             min-width: 0; overflow-wrap: anywhere; }
+.empty { border: 1px dashed var(--border); border-radius: 10px; padding: 28px; text-align: center; color: var(--muted); }
+.insights { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Token Activity <small id="tz"></small></h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="updated" class="muted" style="font-size:11px"></span>
+      <button id="sync" type="button">Sync</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+      <div><h2>Token Activity</h2><p class="sub" style="margin:0">Local calendar days</p></div>
+      <fieldset class="seg" aria-label="Chart mode">
+        <button type="button" data-mode="daily" aria-pressed="true">Daily</button>
+        <button type="button" data-mode="weekly" aria-pressed="false">Weekly</button>
+        <button type="button" data-mode="cumulative" aria-pressed="false">Cumulative</button>
+      </fieldset>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div id="chart" style="margin-top:16px"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Activity Insights</h2>
+    <p class="sub">Tasks, priority, reasoning, and skills</p>
+    <div class="insights" id="insights"></div>
+  </section>
+
+  <div class="grid-2">
+    <section class="panel"><h2>Most-used Skills</h2><p class="sub">Canonical skill activations</p><div id="skills"></div></section>
+    <section class="panel"><h2>Most-used Models</h2><p class="sub">Assistant requests by provider/model</p><div id="models"></div></section>
+  </div>
+
+  <section class="panel">
+    <h2>Reflections</h2>
+    <p class="sub">Accepted findings from /reflect</p>
+    <div id="reflections"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Formatting + local-calendar helpers (ported from activity-view-models)
+// ---------------------------------------------------------------------------
+const fmtInt = n => n.toLocaleString();
+const fmtCompact = n => {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1).replace(/\.0$/, "")}bn`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}m`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(n);
+};
+const parseKey = key => { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d, 12); };
+const dayName = key => parseKey(key).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" });
+const monthName = key => parseKey(key).toLocaleString(undefined, { month: "short" });
+const weekLabel = key => parseKey(key).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const relTime = ms => {
+  const diff = Date.now() - ms;
+  const mins = Math.round(diff / 60000);
+  if (mins < 60) return mins <= 1 ? "just now" : `${mins} minutes ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `about ${hours}${hours === 1 ? " hour ago" : " hours ago"}`;
+  const days = Math.round(hours / 24);
+  return days + (days === 1 ? " day ago" : " days ago");
+};
+const fmtDuration = ms => {
+  const totalMinutes = Math.round(ms / 60000);
+  const h = Math.floor(totalMinutes / 60), m = totalMinutes % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (totalMinutes > 0) return `${totalMinutes}m`;
+  return `${Math.round(ms / 1000)}s`;
+};
+const el = (tag, attrs = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "text") node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const child of children) node.append(child);
+  return node;
+};
+
+// ---------------------------------------------------------------------------
+// Heatmap grid builder (port of buildActivityHeatmapGrid + month anchoring)
+// ---------------------------------------------------------------------------
+function buildGrid(daily, window) {
+  const byDate = new Map(daily.map(p => [p.date, p]));
+  const start = window.start, end = window.end;
+  const endDate = parseKey(end);
+  const endSunday = new Date(endDate); endSunday.setDate(endDate.getDate() - endDate.getDay());
+  const gridStart = new Date(endSunday); gridStart.setDate(endSunday.getDate() - 51 * 7);
+  const key = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  let peak = 0;
+  for (const p of daily) peak = Math.max(peak, p.tokens);
+  const cells = [], monthLabels = [];
+  let lastMonth = null;
+  for (let w = 0; w < 52; w++) {
+    let monthStart = null, firstVisible = null;
+    for (let dow = 0; dow < 7; dow++) {
+      const date = new Date(gridStart); date.setDate(gridStart.getDate() + w * 7 + dow);
+      const k = key(date);
+      const inWindow = k >= start && k <= end;
+      if (inWindow) { firstVisible ??= k; if (date.getDate() === 1) monthStart = k; }
+      const p = inWindow ? byDate.get(k) : undefined;
+      const tokens = p ? p.tokens : 0, tasks = p ? p.tasks : 0;
+      const ratio = peak > 0 ? tokens / peak : 0;
+      cells.push({
+        date: inWindow ? k : null, tokens, tasks, pad: !inWindow,
+        level: !inWindow || tokens <= 0 ? 0 : ratio <= 0.25 ? 1 : ratio <= 0.5 ? 2 : ratio <= 0.75 ? 3 : 4,
+      });
+    }
+    const labelDate = monthStart ?? (w === 0 ? firstVisible : null);
+    if (labelDate) {
+      const mk = labelDate.slice(0, 7);
+      if (mk !== lastMonth) { monthLabels.push({ w, label: monthName(labelDate) }); lastMonth = mk; }
+    }
+  }
+  return { cells, monthLabels, peak };
+}
+
+// ---------------------------------------------------------------------------
+// Renderers
+// ---------------------------------------------------------------------------
+function renderCards(stats) {
+  const cards = document.getElementById("cards");
+  cards.replaceChildren(
+    card("Lifetime", fmtCompact(stats.lifetimeTokens), `${fmtInt(stats.totalRequests)} requests`),
+    card("Peak", stats.peakDay ? fmtCompact(stats.peakDay.tokens) : "—", stats.peakDay ? stats.peakDay.date : "no activity yet"),
+    card("Streak", stats.streak.current + (stats.streak.current === 1 ? " day" : " days"), `Longest ${stats.streak.longest} days`),
+    card("Longest Task", stats.longestTask ? fmtDuration(stats.longestTask.durationMs) : "—",
+      stats.longestTask ? `${stats.longestTask.date} · ${stats.longestTask.folder}` : "no completed tasks"),
+  );
+}
+function card(label, value, sub) {
+  return el("div", { class: "card" },
+    el("div", { class: "label", text: label }),
+    el("div", { class: "value", text: value }),
+    el("div", { class: "sub", text: sub }));
+}
+
+function renderHeatmap(stats) {
+  const grid = buildGrid(stats.daily, stats.window);
+  const wrap = el("div", { class: "hm-wrap" });
+  const scroll = el("div", { class: "hm-scroll" });
+  const months = el("div", { class: "hm-months", style: "grid-template-columns:28px repeat(52,minmax(0,1fr))" });
+  months.append(el("span", { "aria-hidden": "true" }));
+  for (let w = 0; w < 52; w++) {
+    const m = grid.monthLabels.find(x => x.w === w);
+    months.append(el("span", { text: m ? m.label : "" }));
+  }
+  const body = el("div", { class: "hm-body" });
+  const days = el("div", { class: "hm-days", "aria-hidden": "true" });
+  for (const d of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) days.append(el("span", { text: d }));
+  const gridEl = el("div", { class: "hm-grid", style: "grid-template-columns:repeat(52,minmax(0,1fr))" });
+  for (const cell of grid.cells) {
+    if (cell.pad) { gridEl.append(el("span", { class: "cell", "data-pad": "1", "aria-hidden": "true" })); continue; }
+    const label = `${dayName(cell.date)}: ${fmtInt(cell.tokens)} tokens, ${fmtInt(cell.tasks)}${cell.tasks === 1 ? " task" : " tasks"}`;
+    gridEl.append(el("span", {
+      class: "cell", "data-level": String(cell.level), role: "img", tabindex: "0",
+      "aria-label": label,
+      "data-tip-head": `${fmtInt(cell.tokens)} tokens · ${fmtInt(cell.tasks)}${cell.tasks === 1 ? " task" : " tasks"}`,
+      "data-tip-date": dayName(cell.date),
+    }));
+  }
+  body.append(days, gridEl);
+  const legend = el("div", { class: "hm-legend" }, el("span", { text: "Less" }));
+  for (let level = 0; level <= 4; level++) legend.append(el("span", { class: "cell", "data-level": String(level), "aria-hidden": "true", style: "flex:none" }));
+  legend.append(el("span", { text: "More" }));
+  if (grid.peak > 0) legend.append(el("span", { text: `Peak day ${fmtCompact(grid.peak)} tokens` }));
+  scroll.append(months, body, legend);
+  wrap.append(scroll);
+  installTooltip(wrap, gridEl);
+  return wrap;
+}
+
+// GitHub-style instant tooltip: delegated hover/focus, flip below near the
+// top, clamped horizontally, hidden on true exit.
+function installTooltip(wrap, gridEl) {
+  let tip = null;
+  const show = target => {
+    const cell = target instanceof HTMLElement ? target.closest("[data-tip-head]") : null;
+    if (!cell) return;
+    hide();
+    const c = cell.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+    const below = c.top - w.top < 44;
+    tip = el("div", { class: "tooltip", role: "tooltip", "data-below": String(below) },
+      el("b", { text: cell.dataset.tipHead }), el("span", { text: cell.dataset.tipDate }));
+    const left = Math.min(Math.max(c.left - w.left + c.width / 2, 110), Math.max(w.width - 110, 110));
+    tip.style.left = `${left}px`;
+    tip.style.top = `${below ? c.bottom - w.top + 6 : c.top - w.top - 6}px`;
+    wrap.append(tip);
+  };
+  const hide = () => { tip?.remove(); tip = null; };
+  gridEl.addEventListener("mouseover", e => show(e.target));
+  gridEl.addEventListener("mouseout", e => {
+    if (e.relatedTarget instanceof HTMLElement && e.relatedTarget.closest("[data-tip-head]")) return;
+    hide();
+  });
+  gridEl.addEventListener("focusin", e => show(e.target));
+  gridEl.addEventListener("focusout", () => hide());
+}
+
+function renderSvgChart(points, mode) {
+  const W = 1080, H = 220, padL = 56, padB = 24, padT = 10;
+  const values = points.map(p => mode === "cumulative" ? p.totalTokens : p.tokens);
+  const max = Math.max(...values, 1);
+  const chart = el("div", { class: "chart" });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", mode === "cumulative" ? "Cumulative token activity" : "Weekly token activity");
+  const plotW = W - padL - 8, plotH = H - padT - padB;
+  for (let g = 0; g <= 3; g++) {
+    const y = padT + plotH - (g / 3) * plotH;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(padL)); line.setAttribute("x2", String(W - 8));
+    line.setAttribute("y1", String(y)); line.setAttribute("y2", String(y));
+    line.setAttribute("class", "grid-line");
+    svg.append(line);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(padL - 6)); label.setAttribute("y", String(y + 3));
+    label.setAttribute("text-anchor", "end");
+    label.textContent = fmtCompact(Math.round((g / 3) * max));
+    svg.append(label);
+  }
+  const step = plotW / points.length;
+  if (mode === "weekly") {
+    points.forEach((p, i) => {
+      const h = (p.tokens / max) * plotH;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", String(padL + i * step + 1));
+      rect.setAttribute("y", String(padT + plotH - h));
+      rect.setAttribute("width", String(Math.max(step - 2, 2)));
+      rect.setAttribute("height", String(Math.max(h, 0)));
+      rect.setAttribute("class", "bar");
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${weekLabel(p.weekStart)}: ${fmtInt(p.tokens)} tokens`;
+      rect.append(title);
+      svg.append(rect);
+    });
+  } else {
+    const coord = (v, i) => `${padL + i * step + step / 2},${padT + plotH - (v / max) * plotH}`;
+    const linePath = points.map((p, i) => (i === 0 ? "M" : "L") + coord(p.totalTokens, i)).join(" ");
+    const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    area.setAttribute("d", `${linePath} L ${padL + (points.length - 1) * step + step / 2},${padT + plotH} L ${padL + step / 2},${padT + plotH} Z`);
+    area.setAttribute("class", "area");
+    svg.append(area);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    line.setAttribute("d", linePath);
+    line.setAttribute("class", "line");
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = "Cumulative tokens";
+    line.append(title);
+    svg.append(line);
+  }
+  for (let i = 0; i < points.length; i += 9) {
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(padL + i * step + step / 2));
+    label.setAttribute("y", String(H - 6));
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = weekLabel(points[i].weekStart);
+    svg.append(label);
+  }
+  chart.append(svg);
+  return chart;
+}
+
+function renderInsights(stats) {
+  const box = document.getElementById("insights");
+  const topReasoning = stats.reasoning.levels[0];
+  box.replaceChildren(
+    card("Total Tasks", fmtInt(stats.totalTasks), "completed top-level tasks"),
+    card("Priority / Fast", stats.priority.percentage === null ? "—" : `${(stats.priority.percentage * 100).toFixed(1)}%`,
+      `${fmtInt(stats.priority.priorityRequests)} / ${fmtInt(stats.priority.totalRequests)} requests`),
+    card("Most-used Reasoning", topReasoning ? topReasoning.level : "—",
+      topReasoning ? `${(topReasoning.share * 100).toFixed(1)}% of known (${fmtInt(stats.reasoning.knownRequests)})` : "no known levels"),
+    card("Skills Explored", fmtInt(stats.skills.distinctSkills), `${fmtInt(stats.skills.totalUses)} total uses`),
+  );
+}
+
+function renderRank(containerId, rows, titleOf, subOf) {
+  const box = document.getElementById(containerId);
+  if (rows.length === 0) { box.replaceChildren(el("div", { class: "empty", text: "No data yet — press Sync." })); return; }
+  const maxShare = Math.max(...rows.map(r => r.share), 0.0001);
+  const rank = el("div", { class: "rank" });
+  rows.forEach((row, i) => {
+    rank.append(el("div", { class: "rank-row" },
+      el("span", { class: "rank-n", text: String(i + 1) }),
+      el("div", { class: "rank-body" },
+        el("div", { class: "rank-title", text: titleOf(row) }),
+        el("div", { class: "rank-bar" }, el("i", { style: `width:${Math.max((row.share / maxShare) * 100, 2)}%` })),
+        el("div", { class: "rank-sub", text: subOf(row) }))));
+  });
+  box.replaceChildren(rank);
+}
+
+function renderReflections(stats) {
+  const box = document.getElementById("reflections");
+  if (stats.reflections.length === 0) {
+    box.replaceChildren(el("div", { class: "empty", text: "Run /reflect run." }));
+    return;
+  }
+  box.replaceChildren(...stats.reflections.map((r, i) => {
+    const kv = (label, value) => el("div", { class: "kv" }, el("dt", { text: label }), el("dd", { text: value }));
+    return el("article", { class: "refl", "data-key": `${r.attemptId}:${i}` },
+      el("div", { class: "refl-head" },
+        el("span", {}, el("span", { class: "badge", text: r.category }), " ", el("span", { class: "pill", text: r.confidence })),
+        el("span", { class: "muted", text: `${new Date(r.finishedAt).toLocaleDateString()} · ${r.project}` })),
+      el("div", { class: "refl-obs", text: r.observation }),
+      kv("Evidence", r.evidence), kv("Suggestion", r.suggestion), kv("Expected impact", r.expectedImpact),
+      el("div", { class: "refl-meta" },
+        el("span", { text: `${r.provider}/${r.model}` }),
+        el("span", { text: relTime(r.finishedAt) })));
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// App shell
+// ---------------------------------------------------------------------------
+let mode = "daily";
+let current = null;
+
+function renderChart() {
+  const box = document.getElementById("chart");
+  if (!current) return;
+  if (mode === "daily") box.replaceChildren(renderHeatmap(current));
+  else box.replaceChildren(renderSvgChart(mode === "weekly" ? current.weekly : current.cumulative, mode));
+}
+
+function renderAll(stats) {
+  current = stats;
+  document.getElementById("tz").textContent = stats.window.timezone;
+  document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  renderCards(stats);
+  renderChart();
+  renderInsights(stats);
+  renderRank("skills", stats.skills.topSkills,
+    r => r.skill, r => `${fmtInt(r.uses)} uses · ${(r.share * 100).toFixed(1)}% · ${relTime(r.lastUsed)}`);
+  renderRank("models", stats.models,
+    r => r.model, r => `${r.provider} · ${fmtInt(r.requests)} req · ${(r.share * 100).toFixed(1)}% · ${fmtCompact(r.totalTokens)} tok`);
+  renderReflections(stats);
+}
+
+async function refresh() {
+  const res = await fetch("/api/activity");
+  if (res.ok) renderAll(await res.json());
+}
+
+document.querySelectorAll(".seg button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    mode = btn.dataset.mode;
+    for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-pressed", String(b === btn));
+    renderChart();
+  });
+});
+document.getElementById("sync").addEventListener("click", async () => {
+  const btn = document.getElementById("sync");
+  btn.disabled = true; btn.textContent = "Syncing…";
+  try { await fetch("/api/sync", { method: "POST" }); await refresh(); }
+  finally { btn.disabled = false; btn.textContent = "Sync"; }
+});
+refresh();
+setInterval(refresh, 30_000);
+</script>
+</body>
+</html>
