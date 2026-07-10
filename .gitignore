@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

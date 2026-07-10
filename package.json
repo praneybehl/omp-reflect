@@ -1,0 +1,27 @@
+{
+	"name": "omp-reflect",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"omp": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"scripts": {
+		"test": "bun test",
+		"check": "biome check . && tsgo -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@oh-my-pi/omp-stats": "16.3.15",
+		"@oh-my-pi/pi-ai": "16.3.15",
+		"@oh-my-pi/pi-catalog": "16.3.15",
+		"@oh-my-pi/pi-coding-agent": "16.3.15",
+		"@oh-my-pi/pi-utils": "16.3.15"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.16",
+		"@types/bun": "^1.3.14",
+		"@typescript/native-preview": "7.0.0-dev.20260609.1"
+	}
+}
