@@ -20,6 +20,20 @@
 
 Findings, transcript activity, and their dashboard are self-contained: the extension runs on a stock published **omp 16.3.15** without an oh-my-pi PR or host database access. Browse findings in-session with `/reflect show`, or inspect the complete local Activity view with `/activity`.
 
+## Screenshots
+
+The `/activity` dashboard — lifetime/peak/streak/longest-task cards, a GitHub-style heatmap with instant tooltips, and skill/model rankings, all from your real session history:
+
+![Activity dashboard: summary cards, heatmap with tooltip, insights, and skill/model rankings](docs/media/dashboard-overview.webp)
+
+Weekly token chart (Daily/Weekly/Cumulative toggle):
+
+![Weekly token activity bar chart with activity insights](docs/media/dashboard-weekly.webp)
+
+Accepted `/reflect` findings in the Reflections feed — category, confidence, evidence, suggestion, and expected impact per finding:
+
+![Reflections feed showing sanitized findings with evidence and suggestions](docs/media/dashboard-reflections.webp)
+
 ```
 ┌────────────────────────────┐
 │ host session JSONL +        │
