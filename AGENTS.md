@@ -22,11 +22,18 @@ These are load-bearing invariants. Breaking any of them is a bug even if every t
 - The sidecar filename is exactly `__omp-reflect.jsonl`, written beside the audited session's artifacts. One `start` entry per attempt before dispatch, exactly one `finish` after — statuses `success | invalid | provider_error | aborted` only.
 - Persist reported provider usage on every finish that has it (failed responses are billed activity). Never persist raw task excerpts or raw provider error text.
 
-### Host boundary
+### Host facade boundary
 
-- The host's stats database is read **only** through `ctx.stats` (the five-method facade mirrored in `src/host-stats.ts`). No file in this repo may value-import `@oh-my-pi/omp-stats` aggregator, db, or gain modules — type-only imports from `@oh-my-pi/omp-stats/types` are the sole allowed dependency on that package. Never open `stats.db` directly.
-- `requireHostStats()` must throw the exact string `Activity Reflections requires an oh-my-pi build with ctx.stats.` on hosts without the facade. No fallback path, no stale-parser re-implementation.
-- Behavior/model/tool/gain signals are **never recomputed** from transcript text; they come from the host aggregates or the audit runs without them (`status: "unavailable"`).
+- The host's stats database is optional and is accessed **only** through a present `ctx.stats` five-method facade mirrored in `src/host-stats.ts`. No file in this repo may value-import `@oh-my-pi/omp-stats` aggregator, db, or gain modules — type-only imports from `@oh-my-pi/omp-stats/types` are the sole allowed dependency on that package.
+- `requireHostStats()` must keep throwing the exact string `Activity Reflections requires an oh-my-pi build with ctx.stats.` for callers that explicitly require that facade. Reflection observability itself must instead prefer a valid host facade and otherwise use the injected standalone source.
+- Host-only behavior matrices and Snapcompact gain are never inferred from transcript text. Standalone mode may provide only its own model/tool aggregates; its behavior and gain payload sections stay empty.
+
+### Extension-owned activity analytics
+
+- The only activity store is `${getAgentDir()}/omp-reflect-activity.sqlite`. Never open, attach, read, write, migrate, copy, or inspect the host `~/.omp/stats.db` (or any host `stats.db`) directly. The extension-owned database is intentionally independent even when `ctx.stats` exists.
+- `ActivityDb` lease invariants are transactional: claim, renew, and release use `IMMEDIATE` transactions; every mutation that applies parsed facts or reconciles missing owners verifies the live owner lease before its first write; a stale owner throws before changing offsets or facts. Sync keeps the lease alive with its heartbeat and releases only its own lease.
+- Port parser and aggregate behavior from oh-my-pi branch `feat/activity-insights`, not a new transcript interpretation. Preserve the post-review handling for custom-message skill prompts, rejected `?#` suffixes, monotonic read confirmation, image-only tasks, nested tool-result timestamps, reflection sidecars, and agent-kind path classification. Record any required published-16.3.15 API adaptation in the implementation report.
+- The local `/activity` dashboard reads only `ActivityDb`; its server and tests use injected DB/runtime seams and never depend on a real agent directory.
 
 ### Payload bounds & sanitization
 
@@ -50,7 +57,7 @@ These are load-bearing invariants. Breaking any of them is a bug even if every t
 
 ### Non-goals
 
-No memory/skill writes, no advice injection, no conversation interruption, no `agent.continue()`, no Snapcompact estimation, no second stats database.
+No memory/skill writes, no advice injection, no conversation interruption, no `agent.continue()`, no Snapcompact estimation, and no host stats-database access. The extension-owned activity database and loopback `/activity` dashboard are intentional scope, not host integration.
 
 ## Code conventions
 

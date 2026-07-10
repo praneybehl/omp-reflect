@@ -9,6 +9,12 @@ import {
 	SUCCESS_INTERVAL_MS,
 } from "../src/schedule.ts";
 
+/** Narrow a nullable test value, failing loudly instead of asserting. */
+function must<T>(value: T | null | undefined): T {
+	if (value == null) throw new Error("expected non-null test value");
+	return value;
+}
+
 const temps: string[] = [];
 
 afterEach(() => {
@@ -32,10 +38,10 @@ describe("reflect schedule lease", () => {
 		expect(leaseA).not.toBeNull();
 		const leaseB = b.tryClaimLease(1_000);
 		expect(leaseB).toBeNull();
-		leaseA!.release();
+		leaseA?.release();
 		const leaseB2 = b.tryClaimLease(1_001);
 		expect(leaseB2).not.toBeNull();
-		leaseB2!.release();
+		leaseB2?.release();
 		a.close();
 		b.close();
 	});
@@ -45,11 +51,11 @@ describe("reflect schedule lease", () => {
 		const sched = openReflectSchedule(dbPath);
 		const lease = sched.tryClaimLease();
 		expect(lease).not.toBeNull();
-		const untilBefore = sched.getState().lease_until!;
+		const untilBefore = must(sched.getState().lease_until);
 		// Wait a tiny bit so renew writes a strictly later expiry.
 		const untilAfterClaim = untilBefore;
-		expect(lease!.renew()).toBe(true);
-		const untilAfter = sched.getState().lease_until!;
+		expect(lease?.renew()).toBe(true);
+		const untilAfter = must(sched.getState().lease_until);
 		expect(untilAfter).toBeGreaterThanOrEqual(untilAfterClaim);
 		// Another claim still fails while held.
 		const other = sched.tryClaimLease();
@@ -57,7 +63,7 @@ describe("reflect schedule lease", () => {
 		// Simulate surviving past the original expiry by renewing after a short sleep
 		// is unnecessary: renew already extended from wall clock.
 		expect(untilAfter).toBeGreaterThan(Date.now());
-		lease!.release();
+		lease?.release();
 		sched.close();
 	});
 
@@ -71,8 +77,8 @@ describe("reflect schedule lease", () => {
 		const b = openReflectSchedule(dbPath);
 		const leaseB = b.tryClaimLease(now + LEASE_MS + 1);
 		expect(leaseB).not.toBeNull();
-		expect(leaseB!.owner).not.toBe(leaseA!.owner);
-		leaseB!.release();
+		expect(leaseB?.owner).not.toBe(leaseA?.owner);
+		leaseB?.release();
 		a.close();
 		b.close();
 	});
@@ -81,9 +87,9 @@ describe("reflect schedule lease", () => {
 		const dbPath = tempDb();
 		const a = openReflectSchedule(dbPath);
 		const now = 100_000;
-		const leaseA = a.tryClaimLease(now)!;
+		const leaseA = must(a.tryClaimLease(now));
 		const b = openReflectSchedule(dbPath);
-		const leaseB = b.tryClaimLease(now + LEASE_MS + 5)!;
+		const leaseB = must(b.tryClaimLease(now + LEASE_MS + 5));
 
 		expect(leaseA.renew()).toBe(false);
 		expect(
@@ -109,7 +115,7 @@ describe("reflect schedule lease", () => {
 		const sched = openReflectSchedule(dbPath);
 		sched.setEnabled(true);
 		const now = 200_000;
-		const lease = sched.tryClaimLease(now)!;
+		const lease = must(sched.tryClaimLease(now));
 
 		expect(sched.canSchedule(now)).toBe(true);
 		expect(sched.commitAttempt(lease.owner, { success: false }, now)).toBe(
@@ -121,7 +127,7 @@ describe("reflect schedule lease", () => {
 		const now2 = now + FAILURE_FLOOR_MS;
 		// Re-claim after release for the success path.
 		lease.release();
-		const lease2 = sched.tryClaimLease(now2)!;
+		const lease2 = must(sched.tryClaimLease(now2));
 		expect(sched.commitAttempt(lease2.owner, { success: true }, now2)).toBe(
 			true,
 		);

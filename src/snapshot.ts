@@ -132,7 +132,7 @@ function collectTools(
 	const callIds = new Map<string, string>();
 	for (let i = from; i <= to; i++) {
 		const entry = entries[i];
-		if (!entry || entry.type !== "message") continue;
+		if (entry?.type !== "message") continue;
 		const msg = entry.message;
 		if (msg.role === "assistant") {
 			const assistant = msg as AssistantMessage;
@@ -236,25 +236,26 @@ export function extractTaskWindows(entries: SessionEntry[]): TaskWindow[] {
 	const userIndexes: number[] = [];
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i];
-		if (!entry || entry.type !== "message") continue;
+		if (entry?.type !== "message") continue;
 		if (isTopLevelUserMessage(entry.message)) userIndexes.push(i);
 	}
 
 	const windows: TaskWindow[] = [];
 	for (let u = 0; u < userIndexes.length; u++) {
-		const start = userIndexes[u]!;
-		const nextUser =
-			u + 1 < userIndexes.length ? userIndexes[u + 1]! : entries.length;
+		const start = userIndexes[u];
+		if (start === undefined) continue;
+		const next = userIndexes[u + 1];
+		const nextUser = next === undefined ? entries.length : next;
 		const end = nextUser - 1;
-		const startEntry = entries[start]!;
-		if (startEntry.type !== "message") continue;
+		const startEntry = entries[start];
+		if (startEntry?.type !== "message") continue;
 		const userMsg = startEntry.message;
 		if (userMsg.role !== "user") continue;
 
 		const hasActivity = (() => {
 			for (let i = start + 1; i <= end; i++) {
 				const e = entries[i];
-				if (!e || e.type !== "message") continue;
+				if (e?.type !== "message") continue;
 				if (e.message.role === "assistant" || e.message.role === "toolResult")
 					return true;
 			}
@@ -340,6 +341,7 @@ export function buildBoundedPayload(
 	if (obs.status === "ok") {
 		obs = {
 			status: "ok",
+			source: obs.source,
 			behavior30d: obs.behavior30d,
 			behaviorAll: obs.behaviorAll,
 			gainOverall: obs.gainOverall,
@@ -377,7 +379,11 @@ export function buildBoundedPayload(
 
 	// Last resort: strip observability matrices entirely.
 	if (json.length > COMPLETE_PAYLOAD_LIMIT) {
-		obs = { status: observability.status, error: observability.error };
+		obs = {
+			status: observability.status,
+			source: observability.source,
+			error: observability.error,
+		};
 		json = encode();
 	}
 

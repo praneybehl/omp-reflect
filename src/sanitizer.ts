@@ -70,7 +70,7 @@ export function neutralizeControlDelimiters(text: string): string {
 		if (index === 0) return part;
 		// Drop CSI sequences: ESC [ ... final-byte in @-~
 		const m = part.match(/^[0-9;?]*[ -/]*[@-~]([\s\S]*)$/);
-		return m ? acc + m[1] : acc + `[${part}`;
+		return m ? acc + m[1] : `${acc}[${part}`;
 	}, "");
 	let cleaned = "";
 	for (let i = 0; i < out.length; i++) {

@@ -8,11 +8,16 @@ import type {
 	ToolUsageStats,
 } from "@oh-my-pi/omp-stats/types";
 import type {
+	OwnModelAggregate,
+	OwnToolAggregate,
+} from "../src/analytics/types.ts";
+import type {
 	ExtensionStats,
 	HostExtensionContext,
 	HostModelStats,
 } from "../src/host-stats.ts";
 import { HOST_STATS_REQUIRED_ERROR } from "../src/host-stats.ts";
+import type { StandaloneObservabilityDeps } from "../src/observability.ts";
 import {
 	boundWithActiveReservation,
 	buildObservabilitySnapshotFromAggregates,
@@ -159,7 +164,7 @@ describe("boundWithActiveReservation", () => {
 		);
 		expect(bound).toHaveLength(8);
 		expect(bound.some((r) => r.id === "m11")).toBe(true);
-		expect(bound[0]!.id).toBe("m0");
+		expect(bound[0]?.id).toBe("m0");
 	});
 });
 
@@ -194,32 +199,33 @@ describe("buildObservabilitySnapshotFromAggregates", () => {
 		});
 
 		expect(snap.status).toBe("ok");
+		expect(snap.source).toBe("host");
 		expect(snap.behaviorModels30d).toHaveLength(8);
-		expect(snap.behaviorModels30d!.some((r) => r.model === "gpt-active")).toBe(
+		expect(snap.behaviorModels30d?.some((r) => r.model === "gpt-active")).toBe(
 			true,
 		);
 		expect(
-			snap.behaviorModels30d!.find((r) => r.model === "gpt-active")!
-				.totalMessages,
+			snap.behaviorModels30d?.find((r) => r.model === "gpt-active")
+				?.totalMessages,
 		).toBe(1);
 
 		expect(snap.modelsAll).toHaveLength(8);
-		const activeHost = snap.modelsAll!.find((r) => r.model === "gpt-active");
+		const activeHost = snap.modelsAll?.find((r) => r.model === "gpt-active");
 		expect(activeHost).toBeDefined();
-		expect(activeHost!.totalTokens).toBe(999);
+		expect(activeHost?.totalTokens).toBe(999);
 
 		expect(snap.tools30d).toHaveLength(12);
-		expect(snap.tools30d![0]!.tool).toBe("t0");
-		expect(snap.tools30d![0]!.calls).toBe(50);
+		expect(snap.tools30d?.[0]?.tool).toBe("t0");
+		expect(snap.tools30d?.[0]?.calls).toBe(50);
 
 		// Active-model tool rows only.
-		expect(snap.toolModels30d!.every((r) => r.model === "gpt-active")).toBe(
+		expect(snap.toolModels30d?.every((r) => r.model === "gpt-active")).toBe(
 			true,
 		);
-		expect(snap.toolModels30d![0]!.tool).toBe("special");
+		expect(snap.toolModels30d?.[0]?.tool).toBe("special");
 
-		expect(snap.gainOverall!.savedTokens).toBe(42);
-		expect(snap.behavior30d!.totalMessages).toBe(
+		expect(snap.gainOverall?.savedTokens).toBe(42);
+		expect(snap.behavior30d?.totalMessages).toBe(
 			behaviorModels.reduce((s, r) => s + r.totalMessages, 0),
 		);
 	});
@@ -257,16 +263,36 @@ describe("fetchObservabilitySnapshot", () => {
 			},
 		};
 
+		let ownSyncCalls = 0;
+		const standalone: StandaloneObservabilityDeps = {
+			async syncOwn() {
+				ownSyncCalls += 1;
+				return { processed: 0, files: 0 };
+			},
+			async ownModels() {
+				return [];
+			},
+			async ownTools() {
+				return [];
+			},
+		};
+
 		const ctx = {
 			cwd: "/Users/test/project",
 			stats,
 		} as HostExtensionContext;
 
-		const snap = await fetchObservabilitySnapshot(ctx, {
-			provider: "openai",
-			id: "gpt",
-		});
+		const snap = await fetchObservabilitySnapshot(
+			ctx,
+			{
+				provider: "openai",
+				id: "gpt",
+			},
+			standalone,
+		);
 		expect(snap.status).toBe("ok");
+		expect(snap.source).toBe("host");
+		expect(ownSyncCalls).toBe(0);
 		expect(calls.map((c) => c.method)).toEqual([
 			"sync",
 			"behavior",
@@ -309,8 +335,72 @@ describe("fetchObservabilitySnapshot", () => {
 					c.args[1] === "/Users/test/project",
 			),
 		).toBeDefined();
-		expect(snap.modelsAll![0]!.totalTokens).toBe(2000);
-		expect(snap.gainOverall!.hits).toBe(3);
+		expect(snap.modelsAll?.[0]?.totalTokens).toBe(2000);
+		expect(snap.gainOverall?.hits).toBe(3);
+	});
+
+	test("syncs and bounds extension-owned aggregates without a host facade", async () => {
+		const calls: string[] = [];
+		const models: OwnModelAggregate[] = Array.from(
+			{ length: 10 },
+			(_, index) => ({
+				model: `model-${index}`,
+				provider: "openai",
+				totalRequests: 100 - index,
+				failedRequests: index,
+				totalTokens: (100 - index) * 100,
+				totalCost: index / 10,
+				lastTimestamp: 1_000 + index,
+			}),
+		);
+		const tools: OwnToolAggregate[] = Array.from(
+			{ length: 14 },
+			(_, index) => ({
+				tool: `tool-${index}`,
+				calls: 50 - index,
+				errors: index % 2,
+				lastUsed: 2_000 + index,
+			}),
+		);
+		const standalone: StandaloneObservabilityDeps = {
+			async syncOwn() {
+				calls.push("sync");
+				return { processed: 4, files: 2 };
+			},
+			async ownModels(limit) {
+				calls.push(`models:${limit}`);
+				return models;
+			},
+			async ownTools(limit) {
+				calls.push(`tools:${limit}`);
+				return tools;
+			},
+		};
+
+		const snap = await fetchObservabilitySnapshot(
+			{ cwd: "/tmp" } as HostExtensionContext,
+			undefined,
+			standalone,
+		);
+
+		expect(calls).toEqual(["sync", "models:8", "tools:12"]);
+		expect(snap.status).toBe("ok");
+		expect(snap.source).toBe("standalone");
+		expect(snap.modelsAll).toHaveLength(8);
+		expect(snap.modelsAll?.[0]).toMatchObject({
+			model: "model-0",
+			totalTokens: 10_000,
+		});
+		expect(snap.tools30d).toHaveLength(12);
+		expect(snap.tools30d?.[0]).toMatchObject({
+			tool: "tool-0",
+			calls: 50,
+			errors: 0,
+		});
+		expect(snap.behavior30d).toBeUndefined();
+		expect(snap.behaviorAll).toBeUndefined();
+		expect(snap.gainOverall).toBeUndefined();
+		expect(snap.toolModels30d).toBeUndefined();
 	});
 
 	test("missing facade returns unavailable without local recomputation", async () => {

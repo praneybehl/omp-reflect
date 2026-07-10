@@ -4,6 +4,7 @@ import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { HostExtensionContext } from "./host-stats.ts";
+import type { StandaloneObservabilityDeps } from "./observability.ts";
 import { fetchObservabilitySnapshot } from "./observability.ts";
 import systemPromptTemplate from "./prompts/reflection-system.md" with {
 	type: "text",
@@ -84,6 +85,8 @@ export interface ReflectRunDeps {
 	complete?: typeof completeSimple;
 	/** When true, notify UI on observability unavailability (manual runs). */
 	notifyUnavailable?: (message: string) => void;
+	/** Lazy extension-owned aggregate source for stock hosts without ctx.stats. */
+	standaloneObservability?: StandaloneObservabilityDeps;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -202,10 +205,10 @@ function extractRespondArgs(message: AssistantMessage): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
-		const match = text.match(/\{[\s\S]*\}/);
+		const match = text.match(/\{[\s\S]*\}/)?.[0];
 		if (!match) return undefined;
 		try {
-			return JSON.parse(match[0]!);
+			return JSON.parse(match);
 		} catch {
 			return undefined;
 		}
@@ -266,7 +269,11 @@ export async function runReflection(
 	}
 
 	const activeModel = { provider: model.provider, id: model.id };
-	const observability = await fetchObservabilitySnapshot(ctx, activeModel);
+	const observability = await fetchObservabilitySnapshot(
+		ctx,
+		activeModel,
+		deps.standaloneObservability,
+	);
 	if (observability.status === "unavailable" && deps.notifyUnavailable) {
 		deps.notifyUnavailable(observability.error ?? "Observability unavailable");
 	}

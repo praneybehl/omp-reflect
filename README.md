@@ -2,31 +2,37 @@
 
 **Activity Reflections** — an [oh-my-pi](https://github.com/can1357/oh-my-pi) extension that periodically audits your recent coding-agent sessions with your own active model and produces short, actionable findings about prompt and workflow efficiency: better prompting patterns, model choice, reasoning effort, skill usage, and tool habits.
 
-Findings feed the **Activity** tab of the `omp stats` dashboard and are browsable in-session with `/reflect show`.
+Findings, transcript activity, and their dashboard are self-contained: the extension runs on a stock published **omp 16.3.15** without an oh-my-pi PR or host database access. Browse findings in-session with `/reflect show`, or inspect the complete local Activity view with `/activity`.
 
 ```
-┌─────────────────┐   ctx.stats    ┌──────────────────────────┐
-│ omp stats DB    │───────────────▶│ bounded observability     │
-│ (host aggregates)│               │ snapshot (top-N matrices) │
-└─────────────────┘                └────────────┬─────────────┘
-┌─────────────────┐  session branch             │
-│ recent completed│────────────────▶ sanitized, │ bounded payload
-│ task windows    │                 ┌───────────▼─────────────┐
-└─────────────────┘                 │ active model, structured │
-                                    │ `respond` tool, ≤3       │
-                                    │ findings                 │
-                                    └───────────┬─────────────┘
-                                    ┌───────────▼─────────────┐
-                                    │ __omp-reflect.jsonl      │──▶ omp stats
-                                    │ sidecar (wire v1)        │    Activity tab
-                                    └──────────────────────────┘
+┌────────────────────────────┐
+│ host session JSONL +        │
+│ __omp-reflect.jsonl sidecars│
+└──────────────┬─────────────┘
+               │ incremental extension parser
+┌──────────────▼────────────────────────────────────┐
+│ ~/.omp/agent/omp-reflect-activity.sqlite           │
+│ extension-owned; never host stats.db                │
+└───────────┬───────────────────────┬────────────────┘
+            │                       │
+┌───────────▼────────────┐  ┌───────▼─────────────────┐
+│ standalone observability│  │ /activity HTTP dashboard │
+│ models (top 8), tools   │  │ local server + vanilla UI │
+│ (top 12)                │  └─────────────────────────┘
+└───────────┬────────────┘
+            │ bounded, sanitized payload
+┌───────────▼────────────────────────────────────────┐
+│ active session model + forced `respond` tool        │
+│ ≤3 reflection findings                              │
+└─────────────────────────────────────────────────────┘
 ```
+
+When a future host exposes `ctx.stats`, it is auto-detected and preferred for reflection observability; the extension still keeps its own Activity database and dashboard.
 
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.3
-- An **oh-my-pi build that exposes `ctx.stats`** on the extension context (newer than the published 16.3.15). On an older host every audit fails fast with:
-  `Activity Reflections requires an oh-my-pi build with ctx.stats.`
+- A stock published **oh-my-pi 16.3.15** installation is sufficient. `ctx.stats` is optional: when present it enriches reflection observability automatically; when absent the extension uses its own incremental activity pipeline.
 - One configured model credential — reflections always use your **active session model** and never fall back to another model.
 
 ## Install & load
@@ -55,6 +61,16 @@ The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the d
 | `/reflect status` | Auto state, active model, **coverage watermark** (`N/M tasks (insights through <timestamp>)`), last attempt/success, retry floor, lease holder. |
 | `/reflect auto on\|off` | Persist automatic mode (see below). |
 | `--reflect-daily` (CLI flag) | Enable auto mode for **this process only**, without rewriting the persisted switch. |
+| `/activity` (or `/activity open`) | Sync once if needed, start or reuse the local Activity dashboard, show its URL, and best-effort open it in the desktop browser. |
+| `/activity sync` | Incrementally parse the host session JSONL into the extension-owned activity database and report records/files processed. |
+| `/activity status` | Show the dashboard URL (or `stopped`), last sync counts, and the extension database path. |
+| `/activity stop` | Stop the local dashboard server; it is also stopped during `session_shutdown`. |
+
+## Activity dashboard
+
+`/activity` serves a dependency-free local dashboard from an ephemeral loopback port. It presents the same useful-at-a-glance Activity shape as the host reference: lifetime tokens and request/task headline metrics, peak day/streak/longest-task cards, a 52-week Sunday-keyed calendar with zero days materialized, weekly and cumulative inline-SVG charts, priority/reasoning/skill/model breakdowns, and accepted reflection findings. Hovering a calendar cell or chart point updates its tooltip immediately.
+
+Its database is `${getAgentDir()}/omp-reflect-activity.sqlite` (normally `~/.omp/agent/omp-reflect-activity.sqlite`). It is independent of `~/.omp/stats.db`; opening, syncing, stopping, or shutting down the dashboard never opens or writes the host database.
 
 ## Automatic mode
 
@@ -86,7 +102,8 @@ attempt, so it never burns the retry floor.
 Each audit sends one bounded, sanitized payload:
 
 - The next batch of up to 6 uncovered task windows: the user prompt (≤ 2,000 chars), the final assistant answer (≤ 3,000 chars), elapsed time, effective reasoning level, provider usage/cost, tool names/counts/error flags, and activated skills.
-- Host observability aggregates fetched through `ctx.stats` after a fresh sync: 30-day and lifetime behavior-by-model matrices (top 8 each, one slot always reserved for the active model), all-time model aggregates (top 8), 30-day tool usage (top 12) and active-model tool breakdown (top 12), and the project's Snapcompact gain totals. The extension **never opens `stats.db` directly and never recomputes these signals** from transcript text.
+- On a stock host, the extension first incrementally syncs its own activity database, then supplies bounded extension-owned model aggregates (top 8) and tool aggregates (top 12). The snapshot is marked `source: "standalone"` and deliberately leaves behavior matrices and gain totals empty.
+- When `ctx.stats` is available, that host facade wins automatically after its own sync: it supplies 30-day and lifetime behavior-by-model matrices (top 8 each, with one active-model reservation), all-time model aggregates (top 8), 30-day tool usage (top 12) and active-model tool breakdown (top 12), plus project Snapcompact gain totals. Standalone mode does **not** emulate behavior matrices, gain, or official `/stats` integration.
 - The complete payload — observability JSON included — is capped at **24,000 characters**.
 
 Excluded always: tool arguments and results, images, system prompts, hidden custom message bodies, and subagent transcripts.
@@ -111,13 +128,13 @@ Every dispatched attempt writes an append-only **sidecar** next to the audited s
 
 One `omp.activity-reflection.start` entry before dispatch and exactly one `omp.activity-reflection.finish` entry (`success | invalid | provider_error | aborted`) after — including reported provider usage even for failed responses, since those are real billed requests. Raw excerpts and raw provider errors are never persisted.
 
-`src/wire.ts` mirrors the host's `packages/stats/src/reflection-wire.ts` (schema version 1) so this package installs from published dependencies alone; `test/wire.test.ts` asserts exact constant equality against a sibling oh-my-pi checkout to catch drift. The host's stats parser folds sidecars into its database, where they appear in the Activity dashboard's reflection feed, lifetime token totals, model ranking, and the `reflection` agent-type share.
+`src/wire.ts` mirrors the host's `packages/stats/src/reflection-wire.ts` (schema version 1) so this package installs from published dependencies alone; `test/wire.test.ts` asserts exact constant equality against a sibling oh-my-pi checkout to catch drift. The extension's incremental parser folds session activity and reflection sidecars into its own database, where they power `/activity`'s reflection feed, token totals, model ranking, and reflection agent share. A host `ctx.stats` facade, if available, remains a separate optional source for the richer reflection-only aggregates above.
 
 Sessions are resolved by **stable session id** before every sidecar write: moved sessions write at their new path; dropped sessions discard late finishes and never recreate old directories.
 
 ## Non-goals
 
-Reflect never writes memories or managed skills, never injects advice into the conversation, never interrupts or continues the agent loop, and never estimates compaction savings. It observes, audits, and reports — nothing else.
+Reflect never writes memories or managed skills, never injects advice into the conversation, never interrupts or continues the agent loop, and never estimates compaction savings. It never opens or writes the host `stats.db`; its only analytics store is the extension-owned activity database.
 
 ## Development
 
@@ -132,7 +149,9 @@ bun test        # 28 tests across 6 files
 | `src/index.ts` | Extension factory: `/reflect` command, `--reflect-daily` flag, auto-mode lifecycle hooks |
 | `src/wire.ts` | Mirrored sidecar wire contract (constants + payload types) |
 | `src/host-stats.ts` | Structural `ctx.stats` guard against the published `ExtensionContext` |
-| `src/observability.ts` | Fetches and bounds host aggregates (`behavior/models/tools/gain`) |
+| `src/observability.ts` | Prefers host aggregates when available; otherwise bounds extension-owned model/tool aggregates |
+| `src/analytics/*` | Extension-owned incremental JSONL parser, SQLite lease store, and Activity aggregates |
+| `src/dashboard/*` | Dependency-free loopback Activity dashboard server and vanilla UI |
 | `src/snapshot.ts` | Task-window extraction, selection, and payload bounding |
 | `src/sanitizer.ts` | Secret obfuscation + control-delimiter neutralization |
 | `src/runner.ts` | The model call: forced `respond` tool, validation, acceptance |

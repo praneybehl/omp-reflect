@@ -4,8 +4,15 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
-import { getSessionsDir, logger } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getSessionsDir, logger } from "@oh-my-pi/pi-utils";
+import { type ActivityDb, openActivityDb } from "./analytics/db.ts";
+import { syncActivity } from "./analytics/sync.ts";
+import {
+	type ActivityDashboardHandle,
+	startActivityDashboard,
+} from "./dashboard/server.ts";
 import type { HostExtensionContext } from "./host-stats.ts";
+import type { StandaloneObservabilityDeps } from "./observability.ts";
 import { ReflectRecorder, type SessionLocator } from "./recorder.ts";
 import { runReflection } from "./runner.ts";
 import {
@@ -28,6 +35,162 @@ interface OwnedRun {
 	lease: LeaseHandle;
 	sourceSessionId: string;
 }
+
+export interface ActivitySyncResult {
+	processed: number;
+	files: number;
+}
+
+export interface ActivitySyncRecord extends ActivitySyncResult {
+	at: number;
+}
+
+export interface ActivityRuntimeStatus {
+	dbPath: string;
+	url?: string;
+	lastSync?: ActivitySyncRecord;
+}
+
+export interface ActivityRuntime {
+	readonly standaloneObservability: StandaloneObservabilityDeps;
+	sync(): Promise<ActivitySyncResult>;
+	open(): Promise<ActivityDashboardHandle>;
+	stop(): Promise<boolean>;
+	close(): Promise<void>;
+	status(): ActivityRuntimeStatus;
+}
+
+type ActivityDashboardStarter = (
+	deps: {
+		db: ActivityDb;
+		sync: () => Promise<ActivitySyncResult>;
+	},
+	port?: number,
+) => Promise<ActivityDashboardHandle>;
+
+export interface ActivityRuntimeDeps {
+	/** Explicit path and opener provide a temp-directory seam for tests. */
+	dbPath?: string;
+	openDb?: (dbPath?: string) => ActivityDb;
+	syncDb?: (db: ActivityDb) => Promise<ActivitySyncResult>;
+	startDashboard?: ActivityDashboardStarter;
+}
+
+/**
+ * Lazily owns the extension's independent activity database and dashboard.
+ * The default instance below is process-wide; tests can create isolated copies.
+ */
+export function createActivityRuntime(
+	deps: ActivityRuntimeDeps = {},
+): ActivityRuntime {
+	const openDb = deps.openDb ?? openActivityDb;
+	const syncDb = deps.syncDb ?? syncActivity;
+	const startDashboard = deps.startDashboard ?? startActivityDashboard;
+	let db: ActivityDb | undefined;
+	let dbPath: string | undefined;
+	let serverHandle: ActivityDashboardHandle | undefined;
+	let starting: Promise<ActivityDashboardHandle> | undefined;
+	let syncing: Promise<ActivitySyncResult> | undefined;
+	let lastSync: ActivitySyncRecord | undefined;
+
+	const getDb = (): ActivityDb => {
+		if (db) return db;
+		dbPath =
+			dbPath ??
+			deps.dbPath ??
+			path.join(getAgentDir(), "omp-reflect-activity.sqlite");
+		db = openDb(dbPath);
+		return db;
+	};
+
+	async function sync(): Promise<ActivitySyncResult> {
+		if (syncing) return syncing;
+		const pending = Promise.resolve().then(() => syncDb(getDb()));
+		syncing = pending;
+		try {
+			const result = await pending;
+			lastSync = { ...result, at: Date.now() };
+			return result;
+		} finally {
+			if (syncing === pending) syncing = undefined;
+		}
+	}
+
+	async function open(): Promise<ActivityDashboardHandle> {
+		if (!lastSync) await sync();
+		if (serverHandle) return serverHandle;
+		if (starting) return starting;
+
+		const pending = Promise.resolve().then(() =>
+			startDashboard({ db: getDb(), sync }),
+		);
+		starting = pending;
+		try {
+			const handle = await pending;
+			serverHandle = handle;
+			return handle;
+		} finally {
+			if (starting === pending) starting = undefined;
+		}
+	}
+
+	async function stop(): Promise<boolean> {
+		if (starting) {
+			try {
+				await starting;
+			} catch {
+				// A failed start leaves no server to stop.
+			}
+		}
+		const handle = serverHandle;
+		if (!handle) return false;
+		serverHandle = undefined;
+		await handle.stop();
+		return true;
+	}
+
+	async function close(): Promise<void> {
+		await stop();
+		if (syncing) {
+			try {
+				await syncing;
+			} catch {
+				// The caller that initiated sync receives its failure.
+			}
+		}
+		const current = db;
+		db = undefined;
+		if (current) current.close();
+	}
+
+	const standaloneObservability: StandaloneObservabilityDeps = {
+		syncOwn: sync,
+		async ownModels(limit) {
+			return getDb().ownModelAggregates(limit);
+		},
+		async ownTools(limit) {
+			return getDb().ownToolAggregates(limit);
+		},
+	};
+
+	return {
+		standaloneObservability,
+		sync,
+		open,
+		stop,
+		close,
+		status: () => ({
+			dbPath:
+				dbPath ??
+				deps.dbPath ??
+				path.join(getAgentDir(), "omp-reflect-activity.sqlite"),
+			url: serverHandle?.url,
+			lastSync,
+		}),
+	};
+}
+
+const activityRuntime = createActivityRuntime();
 
 /**
  * Determine top-level interactive main session by the sessions-root relative-depth
@@ -154,6 +317,7 @@ async function handleRun(
 	pi: ExtensionAPI,
 	schedule: ReflectSchedule,
 	owned: { current: OwnedRun | undefined },
+	standaloneObservability: StandaloneObservabilityDeps,
 ): Promise<void> {
 	await ctx.waitForIdle();
 	const lease = schedule.tryClaimLease();
@@ -186,6 +350,7 @@ async function handleRun(
 			notifyUnavailable: (message) => {
 				ctx.ui.notify(`Observability unavailable: ${message}`, "warning");
 			},
+			standaloneObservability,
 		});
 
 		if (result.status === "not_dispatched") {
@@ -235,6 +400,7 @@ function startDetachedAuto(
 	pi: ExtensionAPI,
 	schedule: ReflectSchedule,
 	owned: { current: OwnedRun | undefined },
+	standaloneObservability: StandaloneObservabilityDeps,
 	snapshot: {
 		sourceSessionId: string;
 		sessionFile: string;
@@ -274,6 +440,7 @@ function startDetachedAuto(
 				recorder,
 				mode: "scheduled",
 				signal: controller.signal,
+				standaloneObservability,
 			});
 			const success = result.status === "success";
 			// Late completions cannot commit a lost lease.
@@ -318,8 +485,91 @@ async function abortOwned(
 	owned.current = undefined;
 }
 
-export default function (pi: ExtensionAPI): void {
+export interface ExtensionIntegrationDeps {
+	activityRuntime?: ActivityRuntime;
+	/** Suppress or observe best-effort browser launch in tests. */
+	openExternal?: (url: string) => void;
+}
+
+function launchActivityUrl(url: string): void {
+	try {
+		Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", url], {
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+	} catch {
+		// Dashboard availability does not depend on a desktop opener.
+	}
+}
+
+async function handleActivity(
+	args: string,
+	ctx: ExtensionCommandContext,
+	runtime: ActivityRuntime,
+	openExternal: (url: string) => void,
+): Promise<void> {
+	const command = args.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+	try {
+		if (!command || command === "open") {
+			const handle = await runtime.open();
+			ctx.ui.notify(`Activity dashboard: ${handle.url}`, "info");
+			try {
+				openExternal(handle.url);
+			} catch {
+				// Browser-launch failure is explicitly best effort.
+			}
+			return;
+		}
+		if (command === "sync") {
+			const result = await runtime.sync();
+			ctx.ui.notify(
+				`Activity sync complete: ${result.processed} records from ${result.files} file(s).`,
+				"info",
+			);
+			return;
+		}
+		if (command === "status") {
+			const state = runtime.status();
+			const lastSync = state.lastSync
+				? `${state.lastSync.processed} records from ${state.lastSync.files} file(s) at ${formatTs(state.lastSync.at)}`
+				: "never";
+			ctx.ui.notify(
+				[
+					`server: ${state.url ?? "stopped"}`,
+					`last sync: ${lastSync}`,
+					`database: ${state.dbPath}`,
+				].join("\n"),
+				"info",
+			);
+			return;
+		}
+		if (command === "stop") {
+			const stopped = await runtime.stop();
+			ctx.ui.notify(
+				stopped
+					? "Activity dashboard stopped."
+					: "Activity dashboard is already stopped.",
+				"info",
+			);
+			return;
+		}
+		ctx.ui.notify("Usage: /activity [open|sync|status|stop]", "warning");
+	} catch (err) {
+		ctx.ui.notify(
+			`Activity ${command || "open"} failed: ${String(err)}`,
+			"warning",
+		);
+	}
+}
+
+export default function (
+	pi: ExtensionAPI,
+	deps: ExtensionIntegrationDeps = {},
+): void {
 	pi.setLabel("Activity Reflections");
+	const runtime = deps.activityRuntime ?? activityRuntime;
+	const openExternal = deps.openExternal ?? launchActivityUrl;
 
 	const schedule = openReflectSchedule();
 	const owned: { current: OwnedRun | undefined } = { current: undefined };
@@ -385,7 +635,13 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			if (command === "run") {
-				await handleRun(ctx, pi, schedule, owned);
+				await handleRun(
+					ctx,
+					pi,
+					schedule,
+					owned,
+					runtime.standaloneObservability,
+				);
 				return;
 			}
 			if (command === "status") {
@@ -400,19 +656,63 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand("activity", {
+		description: "Activity dashboard: open | sync | status | stop",
+		getArgumentCompletions(argumentPrefix: string) {
+			const prefix = argumentPrefix.trim().toLowerCase();
+			const items = [
+				{
+					value: "open",
+					label: "open",
+					description: "Open the local Activity dashboard",
+				},
+				{
+					value: "sync",
+					label: "sync",
+					description: "Sync session activity into the extension database",
+				},
+				{
+					value: "status",
+					label: "status",
+					description: "Show dashboard server and sync status",
+				},
+				{
+					value: "stop",
+					label: "stop",
+					description: "Stop the local Activity dashboard",
+				},
+			];
+			if (!prefix) return items;
+			return items.filter(
+				(item) =>
+					item.value.startsWith(prefix) || item.label.startsWith(prefix),
+			);
+		},
+		async handler(args, ctx) {
+			await handleActivity(args, ctx, runtime, openExternal);
+		},
+	});
+
 	pi.on("agent_end", (_event, ctx) => {
 		if (!ctx.hasUI) return; // interactive-only auto
 		const sessionFile = ctx.sessionManager.getSessionFile();
-		if (!isTopLevelMainSession(sessionFile)) return;
+		if (!sessionFile || !isTopLevelMainSession(sessionFile)) return;
 		const model = ctx.model;
 		if (!model) return;
-		startDetachedAuto(ctx, pi, schedule, owned, {
-			sourceSessionId: ctx.sessionManager.getSessionId(),
-			sessionFile: sessionFile!,
-			cwd: ctx.cwd,
-			modelProvider: model.provider,
-			modelId: model.id,
-		});
+		startDetachedAuto(
+			ctx,
+			pi,
+			schedule,
+			owned,
+			runtime.standaloneObservability,
+			{
+				sourceSessionId: ctx.sessionManager.getSessionId(),
+				sessionFile,
+				cwd: ctx.cwd,
+				modelProvider: model.provider,
+				modelId: model.id,
+			},
+		);
 	});
 
 	pi.on("session_before_switch", async () => {
@@ -431,18 +731,25 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
-		await abortOwned(
-			owned,
-			() =>
-				new ReflectRecorder({
-					sessionManager: {
-						getSessionId: () => owned.current?.sourceSessionId ?? "",
-						getSessionFile: () => undefined,
-						getCwd: () => "",
-					},
-					listAll: createListAll(pi),
-				}),
-		);
-		schedule.close();
+		try {
+			await abortOwned(
+				owned,
+				() =>
+					new ReflectRecorder({
+						sessionManager: {
+							getSessionId: () => owned.current?.sourceSessionId ?? "",
+							getSessionFile: () => undefined,
+							getCwd: () => "",
+						},
+						listAll: createListAll(pi),
+					}),
+			);
+		} finally {
+			try {
+				await runtime.close();
+			} finally {
+				schedule.close();
+			}
+		}
 	});
 }

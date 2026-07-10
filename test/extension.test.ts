@@ -10,7 +10,11 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import packageJson from "../package.json";
-import extensionFactory, { isTopLevelMainSession } from "../src/index.ts";
+import type { ActivityDb } from "../src/analytics/db.ts";
+import extensionFactory, {
+	createActivityRuntime,
+	isTopLevelMainSession,
+} from "../src/index.ts";
 import { ReflectRecorder } from "../src/recorder.ts";
 import { acceptFindings, respondTool, runReflection } from "../src/runner.ts";
 import { openReflectSchedule } from "../src/schedule.ts";
@@ -19,6 +23,12 @@ import {
 	ACTIVITY_REFLECTION_SIDECAR,
 	ACTIVITY_REFLECTION_START_TYPE,
 } from "../src/wire.ts";
+
+/** Narrow a nullable test value, failing loudly instead of asserting. */
+function must<T>(value: T | null | undefined): T {
+	if (value == null) throw new Error("expected non-null test value");
+	return value;
+}
 
 const temps: string[] = [];
 
@@ -199,9 +209,10 @@ describe("package loading", () => {
 			extensionFactory(mockPi.api);
 			expect(mockPi.label).toBe("Activity Reflections");
 			expect(mockPi.commands.map((c) => c.name)).toContain("reflect");
+			expect(mockPi.commands.map((c) => c.name)).toContain("activity");
 			expect(mockPi.flags.map((f) => f.name)).toContain("reflect-daily");
 
-			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+			const cmd = must(mockPi.commands.find((c) => c.name === "reflect"));
 			const completions = cmd.getArgumentCompletions?.("") ?? [];
 			const values = completions.map((c) => c.value);
 			expect(values).toContain("run");
@@ -209,6 +220,87 @@ describe("package loading", () => {
 			expect(values).toContain("status");
 			expect(values).toContain("auto on");
 			expect(values).toContain("auto off");
+
+			const activity = must(mockPi.commands.find((c) => c.name === "activity"));
+			const activityCompletions = activity.getArgumentCompletions?.("") ?? [];
+			expect(activityCompletions.map((c) => c.value)).toEqual([
+				"open",
+				"sync",
+				"status",
+				"stop",
+			]);
+		} finally {
+			restoreAgentDir();
+		}
+	});
+
+	test("activity command reuses one server and shuts down isolated resources", async () => {
+		const restoreAgentDir = installTempAgentDir();
+		try {
+			let dbClosed = 0;
+			let syncCalls = 0;
+			let serverStarts = 0;
+			let serverStops = 0;
+			const db = {
+				close() {
+					dbClosed += 1;
+				},
+			} as unknown as ActivityDb;
+			const runtime = createActivityRuntime({
+				dbPath: path.join(tempDir("omp-reflect-activity-"), "activity.sqlite"),
+				openDb: () => db,
+				async syncDb() {
+					syncCalls += 1;
+					return { processed: 7, files: 3 };
+				},
+				async startDashboard() {
+					serverStarts += 1;
+					return {
+						port: 43123,
+						url: "http://127.0.0.1:43123",
+						async stop() {
+							serverStops += 1;
+						},
+					};
+				},
+			});
+			const mockPi = createMockPi();
+			const launched: string[] = [];
+			extensionFactory(mockPi.api, {
+				activityRuntime: runtime,
+				openExternal: (url) => launched.push(url),
+			});
+			const command = must(mockPi.commands.find((c) => c.name === "activity"));
+			const notifications: string[] = [];
+			const ctx = {
+				ui: {
+					notify: (message: string) => notifications.push(message),
+				},
+			} as unknown as ExtensionCommandContext;
+
+			await command.handler("", ctx);
+			await command.handler("open", ctx);
+			expect(syncCalls).toBe(1);
+			expect(serverStarts).toBe(1);
+			expect(launched).toEqual([
+				"http://127.0.0.1:43123",
+				"http://127.0.0.1:43123",
+			]);
+
+			await command.handler("status", ctx);
+			expect(notifications.at(-1)).toContain("server: http://127.0.0.1:43123");
+			expect(notifications.at(-1)).toContain("7 records from 3 file(s)");
+			expect(notifications.at(-1)).toContain("activity.sqlite");
+
+			await command.handler("sync", ctx);
+			expect(syncCalls).toBe(2);
+			await command.handler("stop", ctx);
+			expect(serverStops).toBe(1);
+
+			const shutdown = mockPi.handlers.get("session_shutdown");
+			expect(shutdown).toBeTypeOf("function");
+			await (shutdown as () => Promise<void>)();
+			expect(dbClosed).toBe(1);
 		} finally {
 			restoreAgentDir();
 		}
@@ -488,8 +580,8 @@ describe("runReflection", () => {
 		expect(fs.existsSync(sidecar)).toBe(true);
 		const lines = fs.readFileSync(sidecar, "utf8").trim().split("\n");
 		expect(lines.length).toBeGreaterThanOrEqual(2);
-		const start = JSON.parse(lines[0]!);
-		const finish = JSON.parse(lines[lines.length - 1]!);
+		const start = JSON.parse(must(lines[0]));
+		const finish = JSON.parse(must(lines[lines.length - 1]));
 		expect(start.customType).toBe(ACTIVITY_REFLECTION_START_TYPE);
 		expect(finish.customType).toBe(ACTIVITY_REFLECTION_FINISH_TYPE);
 		expect(finish.data.status).toBe("success");
@@ -745,7 +837,7 @@ describe("ongoing coverage", () => {
 				{ id: "sess-cov", path: fixture.sessionFile, cwd: fixture.dir },
 			];
 			extensionFactory(mockPi.api);
-			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+			const cmd = must(mockPi.commands.find((c) => c.name === "reflect"));
 
 			const notifications: string[] = [];
 			const ctx = {
@@ -842,7 +934,7 @@ describe("ongoing coverage", () => {
 				{ id: "sess-cov", path: fixture.sessionFile, cwd: fixture.dir },
 			];
 			extensionFactory(mockPi.api);
-			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+			const cmd = must(mockPi.commands.find((c) => c.name === "reflect"));
 
 			const notifications: string[] = [];
 			const ctx = {

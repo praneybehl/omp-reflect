@@ -7,6 +7,7 @@ import type {
 	ToolUsageStats,
 } from "@oh-my-pi/omp-stats/types";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { OwnModelAggregate, OwnToolAggregate } from "./analytics/types.ts";
 import {
 	HOST_STATS_REQUIRED_ERROR,
 	type HostExtensionContext,
@@ -15,14 +16,27 @@ import {
 } from "./host-stats.ts";
 
 export type ObservabilityStatus = "ok" | "unavailable";
+export type ObservabilitySource = "host" | "standalone" | "unavailable";
 
 export interface ActiveModelRef {
 	provider: string;
 	id: string;
 }
 
+/**
+ * Extension-owned aggregates used when the published host has no `ctx.stats`
+ * facade. The functions stay lazy so host-backed runs never open our DB.
+ */
+export interface StandaloneObservabilityDeps {
+	syncOwn(): Promise<{ processed: number; files: number }>;
+	ownModels(limit: number): Promise<OwnModelAggregate[]>;
+	ownTools(limit: number): Promise<OwnToolAggregate[]>;
+}
+
 export interface ReflectionObservabilitySnapshot {
 	status: ObservabilityStatus;
+	/** Which aggregate implementation produced this snapshot. */
+	source: ObservabilitySource;
 	/** Normalized failure when status is unavailable. */
 	error?: string;
 	behavior30d?: BehaviorOverallStats;
@@ -87,6 +101,49 @@ function asHostModelStats(
 	});
 }
 
+function asStandaloneModelStats(
+	rows: readonly OwnModelAggregate[],
+): HostModelStats[] {
+	return rows.map((row) => ({
+		model: row.model,
+		provider: row.provider,
+		totalRequests: row.totalRequests,
+		successfulRequests: Math.max(0, row.totalRequests - row.failedRequests),
+		failedRequests: row.failedRequests,
+		errorRate:
+			row.totalRequests === 0 ? 0 : row.failedRequests / row.totalRequests,
+		totalInputTokens: 0,
+		totalOutputTokens: 0,
+		totalCacheReadTokens: 0,
+		totalCacheWriteTokens: 0,
+		cacheRate: 0,
+		totalCost: row.totalCost,
+		totalPremiumRequests: 0,
+		avgDuration: 0,
+		avgTtft: 0,
+		avgTokensPerSecond: 0,
+		firstTimestamp: row.lastTimestamp,
+		lastTimestamp: row.lastTimestamp,
+		totalTokens: row.totalTokens,
+	}));
+}
+
+function asStandaloneToolStats(
+	rows: readonly OwnToolAggregate[],
+): ToolUsageStats[] {
+	return rows.map((row) => ({
+		tool: row.tool,
+		calls: row.calls,
+		errors: row.errors,
+		argsChars: 0,
+		resultChars: 0,
+		totalTokensShare: 0,
+		outputTokensShare: 0,
+		costShare: 0,
+		lastUsed: row.lastUsed,
+	}));
+}
+
 function activeMatcher(
 	active: ActiveModelRef | undefined,
 ): (provider: string, model: string) => boolean {
@@ -96,19 +153,53 @@ function activeMatcher(
 }
 
 /**
- * Fetch and bound host observability aggregates for a reflection audit.
- * Never opens stats.db or recomputes behavior/model/tool/gain signals.
+ * Fetch and bound observability aggregates for a reflection audit. A host
+ * facade always wins; otherwise the injected extension-owned pipeline supplies
+ * models and tools without ever opening the host's stats database.
  */
 export async function fetchObservabilitySnapshot(
 	ctx: HostExtensionContext,
 	activeModel?: ActiveModelRef,
+	standalone?: StandaloneObservabilityDeps,
 ): Promise<ReflectionObservabilitySnapshot> {
 	const facade = tryHostStats(ctx);
 	if (!facade) {
-		logger.warn("reflect observability unavailable", {
-			reason: HOST_STATS_REQUIRED_ERROR,
-		});
-		return { status: "unavailable", error: HOST_STATS_REQUIRED_ERROR };
+		if (!standalone) {
+			logger.warn("reflect observability unavailable", {
+				reason: HOST_STATS_REQUIRED_ERROR,
+			});
+			return {
+				status: "unavailable",
+				source: "unavailable",
+				error: HOST_STATS_REQUIRED_ERROR,
+			};
+		}
+
+		try {
+			await standalone.syncOwn();
+			const [ownModels, ownTools] = await Promise.all([
+				standalone.ownModels(MODEL_LIMIT),
+				standalone.ownTools(TOOL_LIMIT),
+			]);
+			return {
+				status: "ok",
+				source: "standalone",
+				modelsAll: asStandaloneModelStats(ownModels)
+					.sort((a, b) => b.totalRequests - a.totalRequests)
+					.slice(0, MODEL_LIMIT),
+				tools30d: asStandaloneToolStats(ownTools)
+					.sort((a, b) => b.calls - a.calls)
+					.slice(0, TOOL_LIMIT),
+			};
+		} catch (err) {
+			const message = normalizeError(err);
+			logger.warn("reflect observability fetch failed", { err: message });
+			return {
+				status: "unavailable",
+				source: "unavailable",
+				error: message,
+			};
+		}
 	}
 
 	try {
@@ -130,6 +221,7 @@ export async function fetchObservabilitySnapshot(
 
 		return {
 			status: "ok",
+			source: "host",
 			behavior30d: behavior30d.overall,
 			behaviorAll: behaviorAll.overall,
 			behaviorModels30d: boundWithActiveReservation(
@@ -161,7 +253,7 @@ export async function fetchObservabilitySnapshot(
 	} catch (err) {
 		const message = normalizeError(err);
 		logger.warn("reflect observability fetch failed", { err: message });
-		return { status: "unavailable", error: message };
+		return { status: "unavailable", source: "unavailable", error: message };
 	}
 }
 
@@ -182,6 +274,7 @@ export function buildObservabilitySnapshotFromAggregates(input: {
 		: input.tools30d.byToolModel;
 	return {
 		status: "ok",
+		source: "host",
 		behavior30d: input.behavior30d.overall,
 		behaviorAll: input.behaviorAll.overall,
 		behaviorModels30d: boundWithActiveReservation(
