@@ -2,14 +2,21 @@
 
 **Activity Reflections** — an [oh-my-pi](https://github.com/can1357/oh-my-pi) plugin that audits your recent coding-agent sessions with your own active model and produces short, actionable findings about prompt and workflow efficiency: better prompting patterns, model choice, reasoning effort, skill usage, and tool habits.
 
-> **Plugin or extension?** Both, at different layers — in omp a *plugin* is
-> the installable package (`omp plugin install …`, managed with
-> enable/disable/upgrade), while an *extension* is the code unit a plugin
-> ships (a module registering commands and event handlers, declared in the
-> package's `"omp"` manifest). This repo is a plugin containing exactly one
-> extension, `src/index.ts`. `omp plugin install` loads it in every session;
-> `omp --extension <path>` loads the same code directly for a single session
-> without installing anything.
+> **Plugin or extension?** Both, at different layers. In omp an *extension*
+> is a JS/TS module whose default export is a factory
+> `(pi: ExtensionAPI) => void`, loaded fresh per session; omp discovers
+> extensions from three sources — `.omp/extensions/` capability directories
+> (project, then user), enabled *plugins*, and configured paths
+> (`extensions.paths` settings or `--extension` flags). A *plugin* is an
+> npm-style package installed under `~/.omp/plugins` and tracked in the
+> `plugins.json` ledger (`omp plugin install/upgrade/disable/uninstall`);
+> its `"omp"` manifest — or convention directories — can ship extensions,
+> themes, skills, commands, and tools. This repo is a plugin shipping
+> exactly one extension (`"omp": { "extensions": ["./src/index.ts"] }`).
+> Installing the plugin auto-loads it in every session; `omp --extension
+> <path>` loads the same module directly for a single session. Loaded paths
+> are deduplicated by resolved absolute path, so combining both loads two
+> copies — pick one.
 
 Findings, transcript activity, and their dashboard are self-contained: the extension runs on a stock published **omp 16.3.15** without an oh-my-pi PR or host database access. Browse findings in-session with `/reflect show`, or inspect the complete local Activity view with `/activity`.
 
@@ -78,7 +85,7 @@ omp --extension /path/to/omp-reflect
 bun packages/coding-agent/src/cli.ts --extension ../omp-reflect
 ```
 
-The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the directory itself loadable. Don't combine `--extension` with a plugin install of the same repo — the extension would load twice.
+The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the directory itself loadable, both as a plugin and via `--extension`.
 
 ## Commands
 
