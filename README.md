@@ -50,9 +50,9 @@ The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the d
 
 | Command | Effect |
 |---|---|
-| `/reflect run` | Wait for idle, audit up to **6** recent completed tasks, persist the attempt, notify accepted-finding count and the model used. Bypasses the 24 h cadence, but not another process's active lease. |
+| `/reflect run` | Wait for idle, audit the **next batch of up to 6 uncovered tasks**, persist the attempt, notify accepted-finding count and the model used. Already caught up? Reports "Nothing new to reflect on" without recording an attempt. Bypasses the 24 h cadence, but not another process's active lease. |
 | `/reflect show` (or bare `/reflect`) | Browse the latest accepted findings — observation as the label, evidence/suggestion as the description. Esc closes. Empty state: `No reflections yet. Run /reflect run.` |
-| `/reflect status` | Auto state, active model, last attempt/success, retry floor, lease holder. |
+| `/reflect status` | Auto state, active model, **coverage watermark** (`N/M tasks (insights through <timestamp>)`), last attempt/success, retry floor, lease holder. |
 | `/reflect auto on\|off` | Persist automatic mode (see below). |
 | `--reflect-daily` (CLI flag) | Enable auto mode for **this process only**, without rewriting the persisted switch. |
 
@@ -62,14 +62,30 @@ With auto enabled, a reflection is scheduled after `agent_end` on a **top-level 
 
 - at most one success per **24 hours**; failed scheduled attempts retry no sooner than **1 hour**;
 - a cross-process **lease** (2 min TTL, 30 s heartbeat) in `~/.omp/agent/omp-reflect.sqlite` prevents two OMP processes from auditing concurrently — a crashed holder recovers after expiry;
-- scheduled runs only audit task windows **not already covered** by a previous successful reflection of that session;
+- runs only audit task windows **not already covered** by a previous successful reflection of that session (see below);
 - switching or shutting down the session aborts an in-flight owned run and records it as `aborted`; a late completion can never commit under a lost lease.
+
+## Ongoing coverage, not one-off audits
+
+Reflection is a continuous process with a durable watermark, mirroring how
+observability sync works: the sidecar's successful attempts record which task
+windows (`sourceEntryIds`) the insights are already based on, and **every run
+— manual or scheduled — selects only the next batch of up to 6 uncovered
+windows**. Repeated runs therefore walk backward through the backlog until the
+whole session is covered; new tasks re-open the backlog as they complete.
+
+Six is the *per-attempt batch bound* protecting the 24,000-character payload,
+1,600-token response, and 90-second deadline — it is not the coverage horizon.
+`/reflect status` reports where the watermark stands
+(`coverage: 4/9 tasks (insights through 2026-07-10T09:15:00Z)`), and a run with
+nothing uncovered is the caught-up steady state: it notifies and records no
+attempt, so it never burns the retry floor.
 
 ## What the model sees (and what it never sees)
 
 Each audit sends one bounded, sanitized payload:
 
-- Up to 6 task windows: the user prompt (≤ 2,000 chars), the final assistant answer (≤ 3,000 chars), elapsed time, effective reasoning level, provider usage/cost, tool names/counts/error flags, and activated skills.
+- The next batch of up to 6 uncovered task windows: the user prompt (≤ 2,000 chars), the final assistant answer (≤ 3,000 chars), elapsed time, effective reasoning level, provider usage/cost, tool names/counts/error flags, and activated skills.
 - Host observability aggregates fetched through `ctx.stats` after a fresh sync: 30-day and lifetime behavior-by-model matrices (top 8 each, one slot always reserved for the active model), all-time model aggregates (top 8), 30-day tool usage (top 12) and active-model tool breakdown (top 12), and the project's Snapcompact gain totals. The extension **never opens `stats.db` directly and never recomputes these signals** from transcript text.
 - The complete payload — observability JSON included — is capped at **24,000 characters**.
 

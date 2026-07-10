@@ -30,7 +30,8 @@ These are load-bearing invariants. Breaking any of them is a bug even if every t
 
 ### Payload bounds & sanitization
 
-- Bounds are contractual: user prompt ≤ 2,000 chars, final assistant answer ≤ 3,000, complete payload including observability JSON ≤ 24,000; ≤ 6 task windows per manual run; observability matrices bounded to top-8/8/12/12 with one slot reserved for the active model.
+- Bounds are contractual: user prompt ≤ 2,000 chars, final assistant answer ≤ 3,000, complete payload including observability JSON ≤ 24,000; ≤ 6 task windows per attempt; observability matrices bounded to top-8/8/12/12 with one slot reserved for the active model.
+- Reflection is an **ongoing, watermarked process**: BOTH manual and scheduled runs select only windows whose `sourceEntryIds` are not yet covered by a successful attempt in the session's sidecar — the sidecar IS the durable watermark, and six is the per-attempt batch bound, not the coverage horizon. A fully covered session is the caught-up steady state: notify, dispatch nothing, record no attempt (never burn the retry floor on it). `/reflect status` must keep reporting the watermark (`covered/total` + insights-through timestamp).
 - Excluded from the payload, always: tool arguments/results, images, system prompts, hidden custom message bodies, subagent text.
 - Every excerpt passes `createReflectionSanitizer()` (fresh secret reload per dispatch, control-delimiter neutralization, secret obfuscation) **before provider transmission and before persistence**. Reflection output is never deobfuscated.
 - Prompts (`src/prompts/*.md`) must keep their guardrails: no psychological/causal claims about the user, rate comparisons only over nonzero denominators, model-category findings only when every compared model has ≥ 10 responding messages or requests, no correctness/test claims unproven by the supplied metrics.
@@ -43,7 +44,7 @@ These are load-bearing invariants. Breaking any of them is a bug even if every t
 
 ### Scheduling & lifecycle
 
-- Cadence state lives in `${getAgentDir()}/omp-reflect.sqlite` (single row). Semantics: 24 h success interval, 1 h scheduled-failure floor, 2 min cross-process lease renewed every 30 s, owner-guarded commit/release. Manual runs bypass cadence/backoff but never an active foreign lease.
+- Cadence state lives in `${getAgentDir()}/omp-reflect.sqlite` (single row). Semantics: 24 h success interval, 1 h scheduled-failure floor, 2 min cross-process lease renewed every 30 s, owner-guarded commit/release. Manual runs bypass cadence/backoff — but never an active foreign lease, and never the coverage watermark.
 - Auto mode is **interactive-only** (`ctx.hasUI`), top-level main sessions only (≤ 2 path segments under the sessions root), and detaches from `agent_end`. `session_before_switch`/`session_shutdown` abort owned work, best-effort record `aborted`, and a completion under a lost lease must not commit.
 - Sidecar owners are re-resolved by stable session id before every open/append; verify the owning main JSONL exists. Moved sessions write at the new path; dropped sessions discard late finishes.
 

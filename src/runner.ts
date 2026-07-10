@@ -273,11 +273,11 @@ export async function runReflection(
 
 	const branch = ctx.sessionManager.getBranch();
 	const allWindows = extractTaskWindows(branch);
-	const covered =
-		mode === "scheduled"
-			? await recorder.listCoveredSourceIds(sourceSessionId)
-			: undefined;
-	const selected = selectTaskWindows(allWindows, mode, covered);
+	// Coverage-aware in BOTH modes: the sidecar's successful sourceEntryIds are
+	// the durable watermark, so every run — manual or scheduled — audits the
+	// next uncovered batch instead of re-auditing the latest tasks forever.
+	const covered = await recorder.listCoveredSourceIds(sourceSessionId);
+	const selected = selectTaskWindows(allWindows, covered);
 	if (selected.length === 0) {
 		return {
 			status: "not_dispatched",

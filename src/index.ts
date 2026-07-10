@@ -14,6 +14,7 @@ import {
 	openReflectSchedule,
 	type ReflectSchedule,
 } from "./schedule.ts";
+import { extractTaskWindows } from "./snapshot.ts";
 import { findingsToSelectOptions, NO_REFLECTIONS_YET } from "./ui/findings.ts";
 
 const FLAG_REFLECT_DAILY = "reflect-daily";
@@ -86,6 +87,7 @@ async function handleShow(
 
 async function handleStatus(
 	ctx: ExtensionCommandContext,
+	pi: ExtensionAPI,
 	schedule: ReflectSchedule,
 ): Promise<void> {
 	const state = schedule.getState();
@@ -95,9 +97,30 @@ async function handleStatus(
 		state.lease_owner && state.lease_until && state.lease_until > Date.now()
 			? `held until ${new Date(state.lease_until).toISOString()}`
 			: "free";
+	// Coverage watermark: which completed tasks in this session the insights
+	// are based on, per the sidecar's successful attempts.
+	let coverage = "no completed tasks yet";
+	try {
+		const windows = extractTaskWindows(ctx.sessionManager.getBranch());
+		if (windows.length > 0) {
+			const covered = await createRecorder(pi, ctx).listCoveredSourceIds(
+				ctx.sessionManager.getSessionId(),
+			);
+			const coveredWindows = windows.filter((w) =>
+				covered.has(w.sourceEntryId),
+			);
+			const latest = coveredWindows.at(-1);
+			coverage = latest
+				? `${coveredWindows.length}/${windows.length} tasks (insights through ${latest.startedAt})`
+				: `0/${windows.length} tasks`;
+		}
+	} catch (err) {
+		coverage = `unavailable (${String(err)})`;
+	}
 	const lines = [
 		`auto: ${auto ? "on" : "off"}${processAutoEnabled && !state.enabled ? " (process flag)" : ""}`,
 		`active model: ${model}`,
+		`coverage: ${coverage}`,
 		`last attempt: ${formatTs(state.last_attempt_at)}`,
 		`last success: ${formatTs(state.last_success_at)}`,
 		`next scheduled: ${formatTs(state.next_scheduled_attempt_at)}`,
@@ -166,6 +189,15 @@ async function handleRun(
 		});
 
 		if (result.status === "not_dispatched") {
+			// "No uncovered tasks" is the caught-up steady state of an ongoing
+			// process, not a failure: report it and leave cadence state alone.
+			if (result.errorCategory === "no_tasks") {
+				ctx.ui.notify(
+					"Nothing new to reflect on — all completed tasks in this session are covered.",
+					"info",
+				);
+				return;
+			}
 			ctx.ui.notify(
 				`Reflection not dispatched (${result.errorCategory ?? "unknown"}).`,
 				"warning",
@@ -357,7 +389,7 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			if (command === "status") {
-				await handleStatus(ctx, schedule);
+				await handleStatus(ctx, pi, schedule);
 				return;
 			}
 			if (command === "auto") {

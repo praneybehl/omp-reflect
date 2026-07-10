@@ -11,7 +11,7 @@ import type { ReflectionObservabilitySnapshot } from "./observability.ts";
 export const USER_PROMPT_LIMIT = 2_000;
 export const ASSISTANT_ANSWER_LIMIT = 3_000;
 export const COMPLETE_PAYLOAD_LIMIT = 24_000;
-export const MANUAL_TASK_LIMIT = 6;
+export const TASK_BATCH_LIMIT = 6;
 
 export interface TaskToolSummary {
 	name: string;
@@ -286,21 +286,22 @@ export function extractTaskWindows(entries: SessionEntry[]): TaskWindow[] {
 }
 
 /**
- * Select task windows for a manual or scheduled audit.
- * Manual: latest six. Scheduled: only source ids not already covered.
+ * Select the next batch of task windows for an audit — an ongoing process,
+ * not a one-off event. Both manual and scheduled runs are coverage-aware:
+ * windows whose source ids were already covered by a successful reflection
+ * (the sidecar is the durable watermark) are skipped, and the newest
+ * {@link TASK_BATCH_LIMIT} uncovered windows are taken. Repeated runs
+ * therefore walk backward through the backlog until everything is covered;
+ * the batch bound exists only to protect the per-attempt payload budget.
  */
 export function selectTaskWindows(
 	windows: TaskWindow[],
-	mode: "manual" | "scheduled",
 	coveredSourceIds?: ReadonlySet<string>,
 ): TaskWindow[] {
-	if (mode === "manual") {
-		return windows.slice(-MANUAL_TASK_LIMIT);
-	}
 	const covered = coveredSourceIds ?? new Set<string>();
 	return windows
 		.filter((w) => !covered.has(w.sourceEntryId))
-		.slice(-MANUAL_TASK_LIMIT);
+		.slice(-TASK_BATCH_LIMIT);
 }
 
 /**

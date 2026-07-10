@@ -8,6 +8,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import packageJson from "../package.json";
 import extensionFactory, { isTopLevelMainSession } from "../src/index.ts";
 import { ReflectRecorder } from "../src/recorder.ts";
@@ -31,6 +32,14 @@ function tempDir(prefix: string): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 	temps.push(dir);
 	return dir;
+}
+
+/** Point the schedule DB at a temp dir so factory tests never touch ~/.omp. */
+function installTempAgentDir(): () => void {
+	const original = getAgentDir();
+	const dir = tempDir("omp-reflect-agent-");
+	setAgentDir(dir);
+	return () => setAgentDir(original);
 }
 
 interface RegisteredCommand {
@@ -184,20 +193,25 @@ describe("package loading", () => {
 	});
 
 	test("factory registers label, commands, and flag", () => {
-		const mockPi = createMockPi();
-		extensionFactory(mockPi.api);
-		expect(mockPi.label).toBe("Activity Reflections");
-		expect(mockPi.commands.map((c) => c.name)).toContain("reflect");
-		expect(mockPi.flags.map((f) => f.name)).toContain("reflect-daily");
+		const restoreAgentDir = installTempAgentDir();
+		try {
+			const mockPi = createMockPi();
+			extensionFactory(mockPi.api);
+			expect(mockPi.label).toBe("Activity Reflections");
+			expect(mockPi.commands.map((c) => c.name)).toContain("reflect");
+			expect(mockPi.flags.map((f) => f.name)).toContain("reflect-daily");
 
-		const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
-		const completions = cmd.getArgumentCompletions?.("") ?? [];
-		const values = completions.map((c) => c.value);
-		expect(values).toContain("run");
-		expect(values).toContain("show");
-		expect(values).toContain("status");
-		expect(values).toContain("auto on");
-		expect(values).toContain("auto off");
+			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+			const completions = cmd.getArgumentCompletions?.("") ?? [];
+			const values = completions.map((c) => c.value);
+			expect(values).toContain("run");
+			expect(values).toContain("show");
+			expect(values).toContain("status");
+			expect(values).toContain("auto on");
+			expect(values).toContain("auto off");
+		} finally {
+			restoreAgentDir();
+		}
 	});
 });
 
@@ -547,5 +561,319 @@ describe("schedule integration with commands", () => {
 		schedule.setEnabled(false);
 		expect(schedule.getState().enabled).toBe(false);
 		schedule.close();
+	});
+});
+
+describe("ongoing coverage", () => {
+	interface SessionFixture {
+		dir: string;
+		sessionFile: string;
+		artifacts: string;
+		entries: unknown[];
+		recorder: ReflectRecorder;
+		sessionManager: {
+			getSessionId: () => string;
+			getSessionFile: () => string;
+			getCwd: () => string;
+			getBranch: () => unknown[];
+		};
+	}
+
+	function userEntry(id: string, prompt: string): unknown {
+		return {
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "user", content: prompt, timestamp: Date.now() - 5000 },
+		};
+	}
+
+	function assistantEntry(id: string, parentId: string): unknown {
+		return {
+			type: "message",
+			id,
+			parentId,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				api: "openai-responses",
+				provider: "openai",
+				model: "gpt-test",
+				usage: {
+					input: 5,
+					output: 5,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 10,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now() - 1000,
+				duration: 500,
+			},
+		};
+	}
+
+	function sessionFixture(): SessionFixture {
+		const dir = tempDir("omp-reflect-coverage-");
+		const sessionFile = path.join(dir, "main.jsonl");
+		fs.writeFileSync(
+			sessionFile,
+			'{"type":"session","id":"sess-cov"}\n',
+			"utf8",
+		);
+		const artifacts = sessionFile.slice(0, -".jsonl".length);
+		fs.mkdirSync(artifacts, { recursive: true });
+		const entries: unknown[] = [
+			userEntry("e1", "First task"),
+			assistantEntry("e2", "e1"),
+			userEntry("e3", "Second task"),
+			assistantEntry("e4", "e3"),
+		];
+		const sessionManager = {
+			getSessionId: () => "sess-cov",
+			getSessionFile: () => sessionFile,
+			getCwd: () => dir,
+			getBranch: () => entries,
+		};
+		const recorder = new ReflectRecorder({
+			sessionManager,
+			listAll: async () => [{ id: "sess-cov", path: sessionFile, cwd: dir }],
+		});
+		return { dir, sessionFile, artifacts, entries, recorder, sessionManager };
+	}
+
+	function readStartEntries(fixture: SessionFixture): string[][] {
+		const sidecar = path.join(fixture.artifacts, ACTIVITY_REFLECTION_SIDECAR);
+		if (!fs.existsSync(sidecar)) return [];
+		return fs
+			.readFileSync(sidecar, "utf8")
+			.trim()
+			.split("\n")
+			.map(
+				(line) =>
+					JSON.parse(line) as {
+						customType: string;
+						data: { sourceEntryIds?: string[] };
+					},
+			)
+			.filter((entry) => entry.customType === ACTIVITY_REFLECTION_START_TYPE)
+			.map((entry) => entry.data.sourceEntryIds ?? []);
+	}
+
+	function runCtx(fixture: SessionFixture): ExtensionContext {
+		return {
+			cwd: fixture.dir,
+			model: fakeModel(),
+			modelRegistry: {
+				getApiKey: async () => "test-key",
+				resolver: () => async () => "test-key",
+			},
+			sessionManager: fixture.sessionManager,
+		} as unknown as ExtensionContext;
+	}
+
+	test("manual runs walk the backlog and stop when everything is covered", async () => {
+		const fixture = sessionFixture();
+		let citedId = "e1";
+		const complete = mock(async () =>
+			assistantWithFindings([
+				{
+					category: "workflow",
+					observation: "obs",
+					evidence: "ev",
+					suggestion: "sug",
+					expectedImpact: "imp",
+					confidence: "low",
+					sourceEntryIds: [citedId],
+				},
+			]),
+		);
+
+		// Run 1: both windows uncovered -> both selected and covered on success.
+		const first = await runReflection({
+			ctx: runCtx(fixture) as never,
+			recorder: fixture.recorder,
+			mode: "manual",
+			complete: complete as never,
+		});
+		expect(first.status).toBe("success");
+		await fixture.recorder.flush();
+		expect(readStartEntries(fixture)).toEqual([["e1", "e3"]]);
+
+		// Run 2: nothing uncovered -> caught up, nothing dispatched or persisted.
+		const second = await runReflection({
+			ctx: runCtx(fixture) as never,
+			recorder: fixture.recorder,
+			mode: "manual",
+			complete: complete as never,
+		});
+		expect(second.status).toBe("not_dispatched");
+		expect(second.errorCategory).toBe("no_tasks");
+		await fixture.recorder.flush();
+		expect(readStartEntries(fixture)).toHaveLength(1);
+
+		// Run 3: a new completed task arrives -> only the uncovered window is audited.
+		fixture.entries.push(
+			userEntry("e5", "Third task"),
+			assistantEntry("e6", "e5"),
+		);
+		citedId = "e5";
+		const third = await runReflection({
+			ctx: runCtx(fixture) as never,
+			recorder: fixture.recorder,
+			mode: "manual",
+			complete: complete as never,
+		});
+		expect(third.status).toBe("success");
+		await fixture.recorder.flush();
+		expect(readStartEntries(fixture)).toEqual([["e1", "e3"], ["e5"]]);
+	});
+
+	test("/reflect status reports the coverage watermark", async () => {
+		const restoreAgentDir = installTempAgentDir();
+		try {
+			const fixture = sessionFixture();
+			const mockPi = createMockPi();
+			(
+				mockPi.api.pi as {
+					SessionManager: { listAll: () => Promise<unknown[]> };
+				}
+			).SessionManager.listAll = async () => [
+				{ id: "sess-cov", path: fixture.sessionFile, cwd: fixture.dir },
+			];
+			extensionFactory(mockPi.api);
+			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+
+			const notifications: string[] = [];
+			const ctx = {
+				cwd: fixture.dir,
+				model: undefined,
+				sessionManager: fixture.sessionManager,
+				ui: {
+					notify: (message: string) => notifications.push(message),
+					setStatus() {},
+				},
+			} as unknown as ExtensionCommandContext;
+
+			await cmd.handler("status", ctx);
+			expect(notifications.at(-1)).toContain("coverage: 0/2 tasks");
+
+			// Cover the first window via a successful attempt, then re-check.
+			await fixture.recorder.writeStart({
+				attemptId: "att-cov",
+				sourceSessionId: "sess-cov",
+				sourceEntryIds: ["e1"],
+				project: fixture.dir,
+				startedAt: Date.now(),
+				model: { provider: "openai", id: "gpt-test", api: "openai-responses" },
+			});
+			await fixture.recorder.writeFinish({
+				attemptId: "att-cov",
+				sourceSessionId: "sess-cov",
+				status: "success",
+				finishedAt: Date.now(),
+				durationMs: 10,
+				findings: [
+					{
+						category: "workflow",
+						observation: "obs",
+						evidence: "ev",
+						suggestion: "sug",
+						expectedImpact: "imp",
+						confidence: "low",
+						sourceEntryIds: ["e1"],
+					},
+				],
+			});
+			await fixture.recorder.flush();
+
+			await cmd.handler("status", ctx);
+			const status = notifications.at(-1) ?? "";
+			expect(status).toContain("coverage: 1/2 tasks");
+			expect(status).toContain("insights through");
+		} finally {
+			restoreAgentDir();
+		}
+	});
+
+	test("caught-up manual run notifies up-to-date and records no attempt", async () => {
+		const restoreAgentDir = installTempAgentDir();
+		try {
+			const agentDir = getAgentDir();
+			const fixture = sessionFixture();
+			// Cover both windows up front.
+			await fixture.recorder.writeStart({
+				attemptId: "att-all",
+				sourceSessionId: "sess-cov",
+				sourceEntryIds: ["e1", "e3"],
+				project: fixture.dir,
+				startedAt: Date.now(),
+				model: { provider: "openai", id: "gpt-test", api: "openai-responses" },
+			});
+			await fixture.recorder.writeFinish({
+				attemptId: "att-all",
+				sourceSessionId: "sess-cov",
+				status: "success",
+				finishedAt: Date.now(),
+				durationMs: 10,
+				findings: [
+					{
+						category: "workflow",
+						observation: "obs",
+						evidence: "ev",
+						suggestion: "sug",
+						expectedImpact: "imp",
+						confidence: "low",
+						sourceEntryIds: ["e1"],
+					},
+				],
+			});
+			await fixture.recorder.flush();
+
+			const mockPi = createMockPi();
+			(
+				mockPi.api.pi as {
+					SessionManager: { listAll: () => Promise<unknown[]> };
+				}
+			).SessionManager.listAll = async () => [
+				{ id: "sess-cov", path: fixture.sessionFile, cwd: fixture.dir },
+			];
+			extensionFactory(mockPi.api);
+			const cmd = mockPi.commands.find((c) => c.name === "reflect")!;
+
+			const notifications: string[] = [];
+			const ctx = {
+				cwd: fixture.dir,
+				model: fakeModel(),
+				modelRegistry: {
+					getApiKey: async () => "test-key",
+					resolver: () => async () => "test-key",
+				},
+				sessionManager: fixture.sessionManager,
+				waitForIdle: async () => {},
+				ui: {
+					notify: (message: string) => notifications.push(message),
+					setStatus() {},
+				},
+			} as unknown as ExtensionCommandContext;
+
+			await cmd.handler("run", ctx);
+			expect(
+				notifications.some((n) => n.includes("Nothing new to reflect on")),
+			).toBe(true);
+
+			// The caught-up steady state records no attempt and sets no retry floor.
+			const state = openReflectSchedule(
+				path.join(agentDir, "omp-reflect.sqlite"),
+			);
+			expect(state.getState().last_attempt_at).toBeNull();
+			expect(state.getState().next_scheduled_attempt_at).toBeNull();
+			state.close();
+		} finally {
+			restoreAgentDir();
+		}
 	});
 });
