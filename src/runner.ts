@@ -87,6 +87,11 @@ export interface ReflectRunDeps {
 	notifyUnavailable?: (message: string) => void;
 	/** Lazy extension-owned aggregate source for stock hosts without ctx.stats. */
 	standaloneObservability?: StandaloneObservabilityDeps;
+	/**
+	 * Model spec pinned via `/reflect model`. Resolved with the same resolver as
+	 * `--model`; an unresolvable spec is `not_dispatched` — never a fallback.
+	 */
+	modelOverride?: string | null;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -216,7 +221,8 @@ function extractRespondArgs(message: AssistantMessage): unknown {
 }
 
 /**
- * Run one reflection audit against the active model. Never falls back to another model.
+ * Run one reflection audit against the configured model: the pinned override
+ * when set, otherwise the active session model. Never falls back to another model.
  */
 export async function runReflection(
 	deps: ReflectRunDeps,
@@ -227,9 +233,15 @@ export async function runReflection(
 	const attemptId = crypto.randomUUID();
 	const sourceSessionId = ctx.sessionManager.getSessionId();
 
-	const model = ctx.model;
+	const override = deps.modelOverride?.trim() || undefined;
+	const model = override ? ctx.models.resolve(override) : ctx.model;
 	if (!model) {
-		logger.warn("reflect not dispatched: no active model");
+		logger.warn(
+			override
+				? "reflect not dispatched: model override did not resolve"
+				: "reflect not dispatched: no active model",
+			override ? { override } : undefined,
+		);
 		return {
 			status: "not_dispatched",
 			attemptId,

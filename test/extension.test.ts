@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -424,6 +425,123 @@ describe("runReflection", () => {
 		expect(result.errorCategory).toBe("missing_model");
 	});
 
+	test("pinned model override wins over active model and unresolvable spec never dispatches", async () => {
+		const dir = tempDir("omp-reflect-run-");
+		const sessionFile = path.join(dir, "session.jsonl");
+		fs.writeFileSync(sessionFile, "{}\n", "utf8");
+		const makeRecorder = () =>
+			new ReflectRecorder({
+				sessionManager: {
+					getSessionId: () => "sess-1",
+					getSessionFile: () => sessionFile,
+					getCwd: () => dir,
+				},
+				listAll: async () => [{ id: "sess-1", path: sessionFile, cwd: dir }],
+			});
+		const pinned: Model = { ...fakeModel(), id: "pinned-model" };
+		const completeCalls: Model[] = [];
+		const complete = mock(async (model: Model) => {
+			completeCalls.push(model);
+			return assistantWithFindings([
+				{
+					category: "prompting",
+					observation: "Prompt omitted reproduction steps",
+					evidence: "Task e1 needed tool retries",
+					suggestion: "Include failing test name and expected output",
+					expectedImpact: "Fewer clarification turns",
+					confidence: "medium",
+					sourceEntryIds: ["e1"],
+				},
+			]);
+		});
+		const branch = [
+			{
+				type: "message",
+				id: "e1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "user",
+					content: "Please fix the flaky test in auth",
+					timestamp: Date.now() - 5000,
+				},
+			},
+			{
+				type: "message",
+				id: "e2",
+				parentId: "e1",
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Fixed the race by awaiting the lock." },
+					],
+					api: "openai-responses",
+					provider: "openai",
+					model: "gpt-test",
+					usage: {
+						input: 5,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 10,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now() - 1000,
+					duration: 500,
+				},
+			},
+		];
+		const ctx = {
+			cwd: dir,
+			model: fakeModel(),
+			models: {
+				resolve: (spec: string) =>
+					spec === "openai/pinned-model" ? pinned : undefined,
+			},
+			modelRegistry: {
+				getApiKey: async () => "test-key",
+				resolver: () => async () => "test-key",
+			},
+			sessionManager: {
+				getSessionId: () => "sess-1",
+				getSessionFile: () => sessionFile,
+				getCwd: () => dir,
+				getBranch: () => branch,
+			},
+		} as unknown as ExtensionContext;
+
+		// Resolvable override: dispatches against the pinned model, not ctx.model.
+		const overridden = await runReflection({
+			ctx: ctx as never,
+			recorder: makeRecorder(),
+			mode: "manual",
+			complete: complete as never,
+			modelOverride: "openai/pinned-model",
+		});
+		expect(overridden.model?.id).toBe("pinned-model");
+		expect(completeCalls.map((m) => m.id)).toEqual(["pinned-model"]);
+
+		// Unresolvable override: not_dispatched, no model call, no active-model fallback.
+		const unresolved = await runReflection({
+			ctx: ctx as never,
+			recorder: makeRecorder(),
+			mode: "manual",
+			complete: complete as never,
+			modelOverride: "openai/gone-model",
+		});
+		expect(unresolved.status).toBe("not_dispatched");
+		expect(unresolved.errorCategory).toBe("missing_model");
+		expect(completeCalls).toHaveLength(1);
+	});
+
 	test("missing credential never falls back", async () => {
 		const dir = tempDir("omp-reflect-run-");
 		const sessionFile = path.join(dir, "session.jsonl");
@@ -653,6 +771,42 @@ describe("schedule integration with commands", () => {
 		schedule.setEnabled(false);
 		expect(schedule.getState().enabled).toBe(false);
 		schedule.close();
+	});
+
+	test("model override persists, clears, and survives pre-override databases", () => {
+		const dir = tempDir("omp-reflect-model-");
+		const dbPath = path.join(dir, "omp-reflect.sqlite");
+		// Seed a pre-override schema to prove the additive migration.
+		{
+			const legacy = new Database(dbPath);
+			legacy.exec(`
+				CREATE TABLE reflect_schedule (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					enabled INTEGER NOT NULL DEFAULT 0,
+					lease_owner TEXT,
+					lease_until INTEGER,
+					last_attempt_at INTEGER,
+					last_success_at INTEGER,
+					next_scheduled_attempt_at INTEGER
+				);
+				INSERT INTO reflect_schedule (id, enabled) VALUES (1, 1);
+			`);
+			legacy.close();
+		}
+		const schedule = openReflectSchedule(dbPath);
+		// Migration keeps existing state and adds the column as unset.
+		expect(schedule.getState().enabled).toBe(true);
+		expect(schedule.getState().model_override).toBeNull();
+		schedule.setModelOverride("openai/gpt-5.4");
+		schedule.close();
+		// Persists across reopen; clear reverts to the active-model default.
+		const reopened = openReflectSchedule(dbPath);
+		expect(reopened.getState().model_override).toBe("openai/gpt-5.4");
+		reopened.setModelOverride(null);
+		expect(reopened.getState().model_override).toBeNull();
+		reopened.setModelOverride("   ");
+		expect(reopened.getState().model_override).toBeNull();
+		reopened.close();
 	});
 });
 

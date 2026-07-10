@@ -23,7 +23,7 @@ Findings, transcript activity, and their dashboard are self-contained: the exten
 ## How it works (short version)
 
 1. The extension reads your local session logs and keeps its own small sqlite database. All of this stays on your machine.
-2. When you run `/reflect run` (or auto mode kicks in), it makes **one** model call — to the same model your session is already using. No separate "evaluation model", no fallback.
+2. When you run `/reflect run` (or auto mode kicks in), it makes **one** model call — by default to the same model your session is already using, or to a model you pin with `/reflect model <spec>` (e.g. a cheaper one). Never a silent fallback to anything else.
 3. That call never contains your full conversation. It sends short excerpts from up to 6 recent tasks — your prompt (trimmed to 2,000 chars), the final answer (trimmed to 3,000 chars), and usage stats like time, cost, reasoning effort, tool counts, and skills — plus aggregate numbers about your top models and tools. The whole payload is hard-capped at 24,000 characters, and secrets are scrubbed before anything is sent.
 4. Tool arguments and results, images, system prompts, and subagent transcripts are **never** sent.
 5. The model replies with up to 3 short findings. They're stored locally and shown in `/reflect show` and on the `/activity` dashboard.
@@ -73,7 +73,7 @@ When a future host exposes `ctx.stats`, it is auto-detected and preferred for re
 
 - [Bun](https://bun.sh) ≥ 1.3
 - A stock published **oh-my-pi 16.3.15** installation is sufficient. `ctx.stats` is optional: when present it enriches reflection observability automatically; when absent the extension uses its own incremental activity pipeline.
-- One configured model credential — reflections always use your **active session model** and never fall back to another model.
+- One configured model credential — reflections use your **active session model** by default, or a model you pin with `/reflect model <spec>`. There is never a silent fallback to another model.
 
 ## Install
 
@@ -118,6 +118,7 @@ The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the d
 | `/reflect run` | Wait for idle, audit the **next batch of up to 6 uncovered tasks**, persist the attempt, notify accepted-finding count and the model used. Already caught up? Reports "Nothing new to reflect on" without recording an attempt. Bypasses the 24 h cadence, but not another process's active lease. |
 | `/reflect show` (or bare `/reflect`) | Browse the latest accepted findings — observation as the label, evidence/suggestion as the description. Esc closes. Empty state: `No reflections yet. Run /reflect run.` |
 | `/reflect status` | Auto state, active model, **coverage watermark** (`N/M tasks (insights through <timestamp>)`), last attempt/success, retry floor, lease holder. |
+| `/reflect model [spec\|clear]` | Show or pin the model used for reflection runs. Specs use the same forms as `--model` (`provider/id`, bare id, role alias) and are validated before saving; `clear` follows the active session model again. The pin persists across sessions and applies to auto mode too. |
 | `/reflect auto on\|off` | Persist automatic mode (see below). |
 | `--reflect-daily` (CLI flag) | Enable auto mode for **this process only**, without rewriting the persisted switch. |
 | `/activity` (or `/activity open`) | Sync once if needed, start or reuse the local Activity dashboard, show its URL, and best-effort open it in the desktop browser. |
@@ -173,7 +174,7 @@ The prompts additionally forbid psychological or causal claims about the user, r
 
 ## The reflection call
 
-- Model: the active session model, via the host's key resolution. Missing model or credential records a non-dispatched failure — no fallback.
+- Model: the pinned `/reflect model` spec when set (resolved at run time with the same resolver as `--model`), otherwise the active session model — always via the host's key resolution. A missing model, unresolvable pin, or missing credential records a non-dispatched failure — no fallback.
 - One forced structured `respond` tool; low reasoning effort when the model supports it; **1,600** max output tokens; default (non-priority) tier; **90 s** deadline.
 - At most **3 findings** are accepted. Each must match the wire schema — category (`prompting | model | reasoning | skills | tools | workflow`), observation, evidence, suggestion, expected impact, confidence (`low | medium | high`), and known source entry ids. Unknown ids, empty fields, invalid shape, or a provider error/abort reject the attempt (`invalid` / `provider_error` / `aborted`).
 

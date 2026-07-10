@@ -11,6 +11,8 @@ export const FAILURE_FLOOR_MS = 60 * 60 * 1000;
 
 export interface ReflectScheduleState {
 	enabled: boolean;
+	/** Model spec pinned via `/reflect model`; null = use the active session model. */
+	model_override: string | null;
 	lease_owner: string | null;
 	lease_until: number | null;
 	last_attempt_at: number | null;
@@ -35,6 +37,8 @@ export interface ReflectSchedule {
 	getState(): ReflectScheduleState;
 	/** Persist automatic mode. */
 	setEnabled(enabled: boolean): void;
+	/** Persist (or clear, with null) the model spec used for reflection runs. */
+	setModelOverride(spec: string | null): void;
 	/**
 	 * Try to claim the cross-process lease. Returns a handle on success, or
 	 * null when another owner still holds a live lease.
@@ -60,6 +64,7 @@ export interface ReflectSchedule {
 function emptyState(): ReflectScheduleState {
 	return {
 		enabled: false,
+		model_override: null,
 		lease_owner: null,
 		lease_until: null,
 		last_attempt_at: null,
@@ -73,6 +78,10 @@ function parseScheduleRow(row: unknown): ReflectScheduleState {
 	const r = row as Record<string, unknown>;
 	return {
 		enabled: r.enabled === 1,
+		model_override:
+			typeof r.model_override === "string" && r.model_override.length > 0
+				? r.model_override
+				: null,
 		lease_owner: typeof r.lease_owner === "string" ? r.lease_owner : null,
 		lease_until: typeof r.lease_until === "number" ? r.lease_until : null,
 		last_attempt_at:
@@ -98,6 +107,7 @@ export function openReflectSchedule(dbPath?: string): ReflectSchedule {
 		CREATE TABLE IF NOT EXISTS reflect_schedule (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			enabled INTEGER NOT NULL DEFAULT 0,
+			model_override TEXT,
 			lease_owner TEXT,
 			lease_until INTEGER,
 			last_attempt_at INTEGER,
@@ -106,11 +116,18 @@ export function openReflectSchedule(dbPath?: string): ReflectSchedule {
 		);
 		INSERT OR IGNORE INTO reflect_schedule (id) VALUES (1);
 	`);
+	// Additive migration for databases created before model_override existed.
+	const columns = db
+		.query(`PRAGMA table_info(reflect_schedule)`)
+		.all() as Array<{ name: string }>;
+	if (!columns.some((c) => c.name === "model_override")) {
+		db.exec(`ALTER TABLE reflect_schedule ADD COLUMN model_override TEXT`);
+	}
 
 	const read = (): ReflectScheduleState => {
 		const row = db
 			.query(
-				`SELECT enabled, lease_owner, lease_until, last_attempt_at, last_success_at, next_scheduled_attempt_at
+				`SELECT enabled, model_override, lease_owner, lease_until, last_attempt_at, last_success_at, next_scheduled_attempt_at
 				 FROM reflect_schedule WHERE id = 1`,
 			)
 			.get();
@@ -131,6 +148,12 @@ export function openReflectSchedule(dbPath?: string): ReflectSchedule {
 			db.query(`UPDATE reflect_schedule SET enabled = ? WHERE id = 1`).run(
 				enabled ? 1 : 0,
 			);
+		},
+		setModelOverride(spec: string | null) {
+			const value = spec?.trim() || null;
+			db.query(
+				`UPDATE reflect_schedule SET model_override = ? WHERE id = 1`,
+			).run(value);
 		},
 		tryClaimLease(now = Date.now()): LeaseHandle | null {
 			const owner = crypto.randomUUID();

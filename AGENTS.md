@@ -45,7 +45,7 @@ These are load-bearing invariants. Breaking any of them is a bug even if every t
 
 ### Model call
 
-- Always the **active session model** via `ctx.modelRegistry.getApiKey` + resolver; a missing model/credential records a non-dispatched failure. Never fall back to another model.
+- The audit model is the `/reflect model` pin when set (persisted in the schedule DB, resolved at run time via `ctx.models.resolve` — the same resolver as `--model`), otherwise the **active session model**. Credentials always via `ctx.modelRegistry.getApiKey` + resolver; a missing model, unresolvable pin, or missing credential records a non-dispatched failure. Never fall back to another model.
 - One forced structured `respond` tool, low reasoning when supported, 1,600 max output tokens, default (non-priority) tier, 90 s deadline, ≤ 3 accepted findings. Reject unknown source ids, empty fields, invalid shape.
 - The extension exposes **no operational tools** to the reflection model.
 

@@ -255,7 +255,12 @@ async function handleStatus(
 ): Promise<void> {
 	const state = schedule.getState();
 	const auto = processAutoEnabled || state.enabled;
-	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "(none)";
+	const active = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "(none)";
+	const override = state.model_override;
+	const resolved = override ? ctx.models?.resolve(override) : undefined;
+	const model = override
+		? `${override} → ${resolved ? `${resolved.provider}/${resolved.id}` : "UNRESOLVED — runs will not dispatch"} (pinned)`
+		: `${active} (active session)`;
 	const lease =
 		state.lease_owner && state.lease_until && state.lease_until > Date.now()
 			? `held until ${new Date(state.lease_until).toISOString()}`
@@ -282,7 +287,7 @@ async function handleStatus(
 	}
 	const lines = [
 		`auto: ${auto ? "on" : "off"}${processAutoEnabled && !state.enabled ? " (process flag)" : ""}`,
-		`active model: ${model}`,
+		`model: ${model}`,
 		`coverage: ${coverage}`,
 		`last attempt: ${formatTs(state.last_attempt_at)}`,
 		`last success: ${formatTs(state.last_success_at)}`,
@@ -310,6 +315,48 @@ async function handleAuto(
 		return;
 	}
 	ctx.ui.notify("Usage: /reflect auto on|off", "warning");
+}
+
+async function handleModel(
+	args: string,
+	ctx: ExtensionCommandContext,
+	schedule: ReflectSchedule,
+): Promise<void> {
+	const spec = args.trim();
+	if (!spec) {
+		const current = schedule.getState().model_override;
+		const active = ctx.model
+			? `${ctx.model.provider}/${ctx.model.id}`
+			: "(none)";
+		ctx.ui.notify(
+			current
+				? `Reflection model pinned to ${current}. Use "/reflect model clear" to follow the active session model (${active}).`
+				: `Reflection uses the active session model (${active}). Pin one with "/reflect model <provider/id>".`,
+			"info",
+		);
+		return;
+	}
+	if (spec.toLowerCase() === "clear") {
+		schedule.setModelOverride(null);
+		ctx.ui.notify(
+			"Reflection model override cleared; runs follow the active session model.",
+			"info",
+		);
+		return;
+	}
+	const resolved = ctx.models?.resolve(spec);
+	if (!resolved) {
+		ctx.ui.notify(
+			`Model "${spec}" does not resolve to an authenticated model, so it was not saved. Specs use the same forms as --model (provider/id, bare id, or a role alias).`,
+			"warning",
+		);
+		return;
+	}
+	schedule.setModelOverride(spec);
+	ctx.ui.notify(
+		`Reflection model pinned to ${spec} (currently resolves to ${resolved.provider}/${resolved.id}). Runs never fall back; clear with "/reflect model clear".`,
+		"info",
+	);
 }
 
 async function handleRun(
@@ -351,6 +398,7 @@ async function handleRun(
 				ctx.ui.notify(`Observability unavailable: ${message}`, "warning");
 			},
 			standaloneObservability,
+			modelOverride: schedule.getState().model_override,
 		});
 
 		if (result.status === "not_dispatched") {
@@ -441,6 +489,7 @@ function startDetachedAuto(
 				mode: "scheduled",
 				signal: controller.signal,
 				standaloneObservability,
+				modelOverride: schedule.getState().model_override,
 			});
 			const success = result.status === "success";
 			// Late completions cannot commit a lost lease.
@@ -588,7 +637,8 @@ export default function (
 	});
 
 	pi.registerCommand("reflect", {
-		description: "Activity Reflections: run | show | status | auto on|off",
+		description:
+			"Activity Reflections: run | show | status | model | auto on|off",
 		getArgumentCompletions(argumentPrefix: string) {
 			const prefix = argumentPrefix.trim().toLowerCase();
 			const items = [
@@ -606,6 +656,16 @@ export default function (
 					value: "status",
 					label: "status",
 					description: "Show auto state, model, lease",
+				},
+				{
+					value: "model",
+					label: "model",
+					description: "Show or pin the model used for reflections",
+				},
+				{
+					value: "model clear",
+					label: "model clear",
+					description: "Follow the active session model again",
 				},
 				{
 					value: "auto on",
@@ -648,11 +708,18 @@ export default function (
 				await handleStatus(ctx, pi, schedule);
 				return;
 			}
+			if (command === "model") {
+				await handleModel(restArgs, ctx, schedule);
+				return;
+			}
 			if (command === "auto") {
 				await handleAuto(restArgs, ctx, schedule);
 				return;
 			}
-			ctx.ui.notify("Usage: /reflect [run|show|status|auto on|off]", "warning");
+			ctx.ui.notify(
+				"Usage: /reflect [run|show|status|model [spec|clear]|auto on|off]",
+				"warning",
+			);
 		},
 	});
 
