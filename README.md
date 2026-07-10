@@ -1,6 +1,15 @@
 # omp-reflect
 
-**Activity Reflections** — an [oh-my-pi](https://github.com/can1357/oh-my-pi) extension that periodically audits your recent coding-agent sessions with your own active model and produces short, actionable findings about prompt and workflow efficiency: better prompting patterns, model choice, reasoning effort, skill usage, and tool habits.
+**Activity Reflections** — an [oh-my-pi](https://github.com/can1357/oh-my-pi) plugin that audits your recent coding-agent sessions with your own active model and produces short, actionable findings about prompt and workflow efficiency: better prompting patterns, model choice, reasoning effort, skill usage, and tool habits.
+
+> **Plugin or extension?** Both, at different layers — in omp a *plugin* is
+> the installable package (`omp plugin install …`, managed with
+> enable/disable/upgrade), while an *extension* is the code unit a plugin
+> ships (a module registering commands and event handlers, declared in the
+> package's `"omp"` manifest). This repo is a plugin containing exactly one
+> extension, `src/index.ts`. `omp plugin install` loads it in every session;
+> `omp --extension <path>` loads the same code directly for a single session
+> without installing anything.
 
 Findings, transcript activity, and their dashboard are self-contained: the extension runs on a stock published **omp 16.3.15** without an oh-my-pi PR or host database access. Browse findings in-session with `/reflect show`, or inspect the complete local Activity view with `/activity`.
 
