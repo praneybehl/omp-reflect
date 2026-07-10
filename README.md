@@ -35,22 +35,41 @@ When a future host exposes `ctx.stats`, it is auto-detected and preferred for re
 - A stock published **oh-my-pi 16.3.15** installation is sufficient. `ctx.stats` is optional: when present it enriches reflection observability automatically; when absent the extension uses its own incremental activity pipeline.
 - One configured model credential — reflections always use your **active session model** and never fall back to another model.
 
-## Install & load
+## Install
+
+One command, using omp's native plugin manager — installs into
+`~/.omp/plugins` and auto-loads in every session:
+
+```bash
+omp plugin install github:praneybehl/omp-reflect
+```
+
+Or the equivalent script (also handles machines where `omp` isn't on PATH
+yet by falling back to a local clone):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/praneybehl/omp-reflect/main/install.sh | sh
+```
+
+Manage it like any other plugin:
+
+```bash
+omp plugin upgrade omp-reflect     # pull the latest ref
+omp plugin disable omp-reflect     # keep installed, stop loading
+omp plugin uninstall omp-reflect
+```
+
+### Manual / development load
 
 ```bash
 git clone https://github.com/praneybehl/omp-reflect
 cd omp-reflect && bun install
-```
-
-Load it into an interactive session:
-
-```bash
 omp --extension /path/to/omp-reflect
 # or, from an oh-my-pi source checkout:
 bun packages/coding-agent/src/cli.ts --extension ../omp-reflect
 ```
 
-The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the directory itself loadable.
+The package manifest (`"omp": { "extensions": ["./src/index.ts"] }`) makes the directory itself loadable. Don't combine `--extension` with a plugin install of the same repo — the extension would load twice.
 
 ## Commands
 
