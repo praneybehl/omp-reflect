@@ -20,6 +20,16 @@
 
 Findings, transcript activity, and their dashboard are self-contained: the extension runs on a stock published **omp 16.3.15** without an oh-my-pi PR or host database access. Browse findings in-session with `/reflect show`, or inspect the complete local Activity view with `/activity`.
 
+## How it works (short version)
+
+1. The extension reads your local session logs and keeps its own small sqlite database. All of this stays on your machine.
+2. When you run `/reflect run` (or auto mode kicks in), it makes **one** model call — to the same model your session is already using. No separate "evaluation model", no fallback.
+3. That call never contains your full conversation. It sends short excerpts from up to 6 recent tasks — your prompt (trimmed to 2,000 chars), the final answer (trimmed to 3,000 chars), and usage stats like time, cost, reasoning effort, tool counts, and skills — plus aggregate numbers about your top models and tools. The whole payload is hard-capped at 24,000 characters, and secrets are scrubbed before anything is sent.
+4. Tool arguments and results, images, system prompts, and subagent transcripts are **never** sent.
+5. The model replies with up to 3 short findings. They're stored locally and shown in `/reflect show` and on the `/activity` dashboard.
+
+So the only thing that ever leaves your machine is that one bounded, sanitized call to your configured provider — a run costs cents (last real run: $0.18). Full details in [What the model sees](#what-the-model-sees-and-what-it-never-sees).
+
 ## Screenshots
 
 The `/activity` dashboard — lifetime/peak/streak/longest-task cards, a GitHub-style heatmap with instant tooltips, and skill/model rankings, all from your real session history:
